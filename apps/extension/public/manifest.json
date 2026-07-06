@@ -1,0 +1,26 @@
+{
+  "manifest_version": 3,
+  "name": "Tweet Helper",
+  "version": "0.1.0",
+  "description": "Local X post, comment, and reaction helper with human-approved drafts.",
+  "permissions": ["storage", "clipboardWrite"],
+  "host_permissions": ["http://127.0.0.1:4317/*", "http://localhost:4317/*"],
+  "action": {
+    "default_title": "Tweet Helper",
+    "default_popup": "popup.html"
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://x.com/*", "https://twitter.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'"
+  }
+}

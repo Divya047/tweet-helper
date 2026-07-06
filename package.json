@@ -1,0 +1,24 @@
+{
+  "name": "tweet-helper",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build -w @tweet-helper/shared && npm run build -w @tweet-helper/backend && npm run build -w @tweet-helper/extension",
+    "dev": "npm run dev -w @tweet-helper/backend",
+    "backend:dev": "npm run dev -w @tweet-helper/backend",
+    "extension:build": "npm run build -w @tweet-helper/extension",
+    "test": "vitest run",
+    "typecheck": "tsc -b --pretty false"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "jsdom": "^27.0.0",
+    "typescript": "^5.9.0",
+    "vitest": "^4.0.0"
+  }
+}

@@ -1,0 +1,31 @@
+# Dependencies and builds
+node_modules/
+dist/
+dist-types/
+coverage/
+.vite/
+*.tsbuildinfo
+
+# Local config and secrets
+.env
+.env.*
+!.env.example
+
+# Local app data and personal X exports
+data/
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+*.zip
+*.log
+*.ndjson
+*.jsonl
+style-profile*.json
+x-archive*/
+twitter-archive*/
+
+# OS/editor noise
+.DS_Store
+.idea/
+.vscode/
