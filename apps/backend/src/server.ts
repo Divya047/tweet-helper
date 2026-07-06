@@ -188,7 +188,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Bui
         messages,
         schemaName: "ScoreVisiblePostsResponse",
         schema: scoreResponseSchema,
-        maxTokens: 1600,
+        maxTokens: 10_000,
         temperature: 0.35
       },
       validate: validateScoreVisiblePostsResponse

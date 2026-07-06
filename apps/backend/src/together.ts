@@ -38,6 +38,38 @@ export function createTogetherClient(apiKey: string | undefined, model = DEFAULT
         throw new Error("Missing TOGETHER_API_KEY. Add it to .env.local before generating or scoring.");
       }
 
+      const first = await requestJsonCompletion(apiKey, model, request);
+      try {
+        return {
+          value: parseJsonObject(first.rawText),
+          inputTokens: first.inputTokens,
+          outputTokens: first.outputTokens,
+          costUsd: first.costUsd,
+          rawText: first.rawText
+        };
+      } catch (error) {
+        const repaired = await requestJsonCompletion(apiKey, model, repairRequest(request, first.rawText));
+        try {
+          return {
+            value: parseJsonObject(repaired.rawText),
+            inputTokens: first.inputTokens + repaired.inputTokens,
+            outputTokens: first.outputTokens + repaired.outputTokens,
+            costUsd: first.costUsd + repaired.costUsd,
+            rawText: repaired.rawText
+          };
+        } catch {
+          throw error;
+        }
+      }
+    }
+  };
+}
+
+async function requestJsonCompletion(
+  apiKey: string,
+  model: string,
+  request: JsonCompletionRequest
+): Promise<Omit<JsonCompletionResult, "value">> {
       const response = await fetch("https://api.together.ai/v1/chat/completions", {
         method: "POST",
         headers: {
@@ -72,13 +104,33 @@ export function createTogetherClient(apiKey: string | undefined, model = DEFAULT
       const inputTokens = body?.usage?.prompt_tokens ?? estimateTokens(JSON.stringify(request.messages));
       const outputTokens = body?.usage?.completion_tokens ?? estimateTokens(rawText);
       return {
-        value: parseJsonObject(rawText),
         inputTokens,
         outputTokens,
         costUsd: estimateTogetherCostUsd(inputTokens, outputTokens),
         rawText
       };
-    }
+}
+
+function repairRequest(request: JsonCompletionRequest, rawText: string): JsonCompletionRequest {
+  return {
+    ...request,
+    messages: [
+      ...request.messages,
+      {
+        role: "assistant",
+        content: rawText
+      },
+      {
+        role: "user",
+        content: [
+          "The previous response was not complete valid JSON.",
+          "Return the same answer as complete valid JSON matching the requested schema.",
+          "Return only JSON with no markdown, comments, or explanation."
+        ].join("\n")
+      }
+    ],
+    maxTokens: Math.min(10_000, Math.max(request.maxTokens * 2, request.maxTokens + 1000)),
+    temperature: 0
   };
 }
 

@@ -1,19 +1,21 @@
 import type { ApiEnvelope, DraftResponse, ScoreVisiblePostsResponse, ScoredPost, SourcePost } from "@tweet-helper/shared";
-import { postJson } from "./api.js";
 import {
   extractVisiblePosts,
   findComposers,
   getComposerText,
   getFocusedComposer,
   getNearestSourcePost,
+  isComposerElement,
   insertTextIntoComposer
 } from "./dom.js";
 
 const ROOT_ID = "tweet-helper-root";
 const INLINE_CLASS = "tweet-helper-inline";
+const DEFAULT_BACKEND_URL = "http://127.0.0.1:4317";
 
 let panelRoot: ShadowRoot | undefined;
 let selectedSuggestion: { id: string; kind: "post" | "comment"; text: string; context?: Record<string, unknown> } | undefined;
+let lastFocusedComposer: HTMLElement | undefined;
 
 init();
 
@@ -23,6 +25,7 @@ function init(): void {
   }
   createPanel();
   enhanceComposers();
+  document.addEventListener("focusin", rememberFocusedComposer, true);
   const observer = new MutationObserver(() => enhanceComposers());
   observer.observe(document.documentElement, { childList: true, subtree: true });
 }
@@ -169,6 +172,20 @@ function enhanceComposers(): void {
   }
 }
 
+function rememberFocusedComposer(event: FocusEvent): void {
+  const target = event.target instanceof Element ? event.target : null;
+  if (isComposerElement(target)) {
+    lastFocusedComposer = target;
+  }
+}
+
+function getTargetComposer(): HTMLElement | undefined {
+  if (lastFocusedComposer?.isConnected) {
+    return lastFocusedComposer;
+  }
+  return getFocusedComposer();
+}
+
 async function draftForComposer(composer: HTMLElement): Promise<void> {
   showPanel();
   const sourcePost = getNearestSourcePost(composer);
@@ -185,7 +202,7 @@ async function draftForComposer(composer: HTMLElement): Promise<void> {
 }
 
 async function draftPostFromPanel(): Promise<void> {
-  const composer = getFocusedComposer();
+  const composer = getTargetComposer();
   const topic = getTopicInput() || (composer ? getComposerText(composer) : "");
   if (!topic) {
     setStatus("Add a topic or type a rough draft in the composer.");
@@ -195,7 +212,7 @@ async function draftPostFromPanel(): Promise<void> {
 }
 
 async function draftCommentFromPanel(): Promise<void> {
-  const composer = getFocusedComposer();
+  const composer = getTargetComposer();
   const topic = getTopicInput();
   const sourcePost = composer ? getNearestSourcePost(composer) : undefined;
   if (!sourcePost?.text && !topic) {
@@ -305,7 +322,7 @@ function insertSelected(): void {
     setStatus("Select a draft first.");
     return;
   }
-  const composer = getFocusedComposer();
+  const composer = getTargetComposer();
   if (!composer) {
     setStatus("Focus an X composer first, then insert.");
     return;
@@ -345,6 +362,27 @@ async function withStatus(status: string, action: () => Promise<void>): Promise<
   } catch (error) {
     setStatus(error instanceof Error ? error.message : "Request failed.");
   }
+}
+
+async function getBackendUrl(): Promise<string> {
+  if (typeof chrome !== "undefined" && chrome?.storage?.local) {
+    const stored = await chrome.storage.local.get({ backendUrl: DEFAULT_BACKEND_URL });
+    return typeof stored.backendUrl === "string" ? stored.backendUrl : DEFAULT_BACKEND_URL;
+  }
+  return DEFAULT_BACKEND_URL;
+}
+
+async function postJson<T>(path: string, body: unknown): Promise<T> {
+  const backendUrl = await getBackendUrl();
+  const response = await fetch(`${backendUrl}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body)
+  });
+  if (!response.ok) {
+    throw new Error(`Request failed ${response.status}: ${await response.text()}`);
+  }
+  return (await response.json()) as T;
 }
 
 function showPanel(): void {
