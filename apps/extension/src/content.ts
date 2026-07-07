@@ -34,6 +34,7 @@ let lastSuggestionById = new Map<
 let activitySnapshot: ActivitySnapshot | undefined;
 let activityTimer: number | undefined;
 let panelInputs = { topic: "", angle: "", instructions: "" };
+let panelMode: "post" | "reply" | "scan" = "post";
 
 init();
 
@@ -69,67 +70,136 @@ function renderPanel(state: { status: string; results: string[] }): void {
   }
   lastRendered = state;
   const activityHtml = activitySnapshot ? renderActivitySection(activitySnapshot) : "";
+  const hasResults = state.results.length > 0;
+  const busyLabel = isBusy ? "Working" : "Ready";
+  const hasSelection = Boolean(selectedSuggestion);
+  const canUseSelection = hasSelection && !isBusy;
   panelRoot.innerHTML = `
     <style>
       :host { all: initial; }
+      * { box-sizing: border-box; }
       .panel {
         position: fixed;
-        right: 18px;
-        bottom: 18px;
+        right: 20px;
+        bottom: 20px;
         z-index: 2147483647;
-        width: min(400px, calc(100vw - 36px));
-        max-height: min(680px, calc(100vh - 36px));
+        width: min(424px, calc(100vw - 32px));
+        max-height: min(760px, calc(100vh - 32px));
         overflow: auto;
-        box-sizing: border-box;
-        padding: 12px;
-        border: 1px solid #cbd5e1;
+        padding: 14px;
+        border: 1px solid rgba(15, 23, 42, 0.12);
         border-radius: 8px;
-        background: #ffffff;
-        color: #111827;
-        box-shadow: 0 16px 40px rgba(15, 23, 42, 0.2);
-        font: 13px/1.4 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: rgba(255, 255, 255, 0.94);
+        color: #0f172a;
+        box-shadow: 0 24px 70px rgba(15, 23, 42, 0.24), 0 2px 10px rgba(15, 23, 42, 0.08);
+        font: 13px/1.38 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+        letter-spacing: 0;
+        backdrop-filter: blur(24px) saturate(1.35);
+        -webkit-backdrop-filter: blur(24px) saturate(1.35);
       }
-      .top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-      .title { font-weight: 750; }
-      .controls { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
-      .row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 8px 0 0; }
-      .toggle { display: inline-flex; align-items: center; gap: 6px; color: #334155; font-size: 12px; }
+      .panel::-webkit-scrollbar { width: 10px; }
+      .panel::-webkit-scrollbar-thumb { background: rgba(100, 116, 139, 0.28); border: 3px solid transparent; border-radius: 999px; background-clip: padding-box; }
+      .top { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+      .brand { min-width: 0; }
+      .title { font-size: 15px; font-weight: 760; line-height: 1.15; color: #0f172a; }
+      .subtitle { margin-top: 2px; color: #64748b; font-size: 11px; }
+      .top-actions { display: inline-flex; align-items: center; gap: 8px; }
+      .status-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        height: 28px;
+        padding: 0 10px;
+        border-radius: 999px;
+        background: rgba(241, 245, 249, 0.9);
+        color: #475569;
+        font-size: 11px;
+        font-weight: 650;
+        white-space: nowrap;
+      }
+      .status-chip::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: ${isBusy ? "#f59e0b" : "#22c55e"}; }
+      .section { margin-top: 12px; }
+      .section-title { margin: 0 0 8px; color: #334155; font-size: 12px; font-weight: 720; }
+      .mode-tabs {
+        display: grid;
+        grid-template-columns: 1fr 1fr 1fr;
+        gap: 4px;
+        padding: 4px;
+        border: 1px solid rgba(203, 213, 225, 0.78);
+        border-radius: 8px;
+        background: rgba(248, 250, 252, 0.82);
+      }
+      .mode-tab {
+        min-height: 32px;
+        border-color: transparent;
+        background: transparent;
+        box-shadow: none;
+      }
+      .mode-tab[aria-pressed="true"] {
+        background: #fff;
+        border-color: rgba(148, 163, 184, 0.4);
+        box-shadow: 0 1px 4px rgba(15, 23, 42, 0.08);
+      }
+      .controls { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 0; }
+      .primary-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
+      .utility-actions { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin-top: 8px; }
+      .settings-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        margin-top: 8px;
+        padding: 8px;
+        border: 1px solid rgba(203, 213, 225, 0.8);
+        border-radius: 8px;
+        background: rgba(248, 250, 252, 0.76);
+      }
+      .toggle { display: inline-flex; align-items: center; gap: 7px; color: #475569; font-size: 12px; font-weight: 590; }
+      .toggle input { accent-color: #0f172a; }
       button {
-        border: 1px solid #cbd5e1;
-        border-radius: 6px;
-        background: #f8fafc;
-        color: #111827;
+        min-height: 34px;
+        border: 1px solid rgba(203, 213, 225, 0.95);
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.82);
+        color: #0f172a;
         cursor: pointer;
-        padding: 7px 9px;
+        padding: 7px 10px;
         font: inherit;
-        transition: transform 0.1s ease, opacity 0.15s ease;
+        font-weight: 650;
+        transition: transform 0.12s ease, opacity 0.15s ease, background 0.15s ease, border-color 0.15s ease;
       }
+      button:hover:not([disabled]) { background: #f8fafc; border-color: #94a3b8; }
       button:active:not([disabled]) { transform: scale(0.97); }
       button[disabled] { opacity: 0.55; cursor: not-allowed; }
-      button.primary { border-color: #111827; background: #111827; color: #fff; }
+      button.is-selected { border-color: #2563eb; background: #eff6ff; color: #1d4ed8; }
+      button.primary { min-height: 40px; border-color: #0f172a; background: #0f172a; color: #fff; box-shadow: 0 8px 18px rgba(15, 23, 42, 0.18); }
+      button.primary:hover:not([disabled]) { background: #1e293b; border-color: #1e293b; }
+      button.icon { width: 32px; min-height: 32px; padding: 0; border-radius: 999px; color: #64748b; }
+      button.ghost { background: transparent; border-color: transparent; color: #64748b; }
       button.activity-post {
         flex: 1;
-        border-color: #3b82f6;
-        background: linear-gradient(180deg, #eff6ff 0%, #dbeafe 100%);
+        border-color: rgba(37, 99, 235, 0.22);
+        background: #eff6ff;
         color: #1d4ed8;
-        font-weight: 600;
       }
       button.activity-reply {
         flex: 1;
-        border-color: #8b5cf6;
-        background: linear-gradient(180deg, #f5f3ff 0%, #ede9fe 100%);
+        border-color: rgba(124, 58, 237, 0.22);
+        background: #f5f3ff;
         color: #6d28d9;
-        font-weight: 600;
       }
-      .field { margin: 8px 0 0; }
+      .field { margin: 9px 0 0; }
+      .field[hidden], .mode-actions[hidden] { display: none; }
       .field-label {
         display: flex;
         align-items: center;
         justify-content: space-between;
         font-size: 11px;
         color: #64748b;
-        margin-bottom: 4px;
+        margin-bottom: 5px;
+        font-weight: 680;
       }
+      .field-label span:last-child { font-weight: 560; color: #94a3b8; }
       .clear-btn {
         border: none;
         background: transparent;
@@ -143,27 +213,55 @@ function renderPanel(state: { status: string; results: string[] }): void {
       textarea {
         box-sizing: border-box;
         width: 100%;
-        min-height: 44px;
+        min-height: 50px;
         resize: vertical;
-        border: 1px solid #cbd5e1;
-        border-radius: 6px;
-        padding: 8px;
+        border: 1px solid rgba(203, 213, 225, 0.95);
+        border-radius: 8px;
+        padding: 9px 10px;
+        background: rgba(255, 255, 255, 0.9);
+        color: #0f172a;
         font: inherit;
+        outline: none;
+        transition: border-color 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
       }
-      .status { color: #475569; margin: 6px 0 0; }
+      textarea:focus { border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12); background: #fff; }
+      textarea::placeholder { color: #94a3b8; }
+      .status {
+        margin: 10px 0 0;
+        padding: 9px 10px;
+        border-radius: 8px;
+        background: rgba(248, 250, 252, 0.86);
+        color: #475569;
+        font-size: 12px;
+      }
+      .selection-note {
+        margin-top: 8px;
+        color: ${hasSelection ? "#2563eb" : "#94a3b8"};
+        font-size: 11px;
+        font-weight: 650;
+      }
+      .results { display: grid; gap: 10px; margin-top: 10px; }
       .result {
-        border-top: 1px solid #e2e8f0;
-        padding-top: 10px;
-        margin-top: 10px;
+        border: 1px solid rgba(226, 232, 240, 0.95);
+        border-radius: 8px;
+        padding: 11px;
+        background: rgba(255, 255, 255, 0.78);
         white-space: pre-wrap;
       }
-      .meta { color: #64748b; font-size: 12px; margin-bottom: 5px; }
+      .result.selected { border-color: rgba(37, 99, 235, 0.6); box-shadow: inset 0 0 0 1px rgba(37, 99, 235, 0.16); }
+      .result-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 7px; }
+      .result-title { color: #334155; font-weight: 720; font-size: 12px; }
+      .draft-text { color: #0f172a; font-size: 13px; line-height: 1.45; }
+      .meta { color: #64748b; font-size: 11px; margin-top: 6px; }
+      .badge { display: inline-flex; align-items: center; min-height: 22px; padding: 2px 7px; border-radius: 999px; background: #f1f5f9; color: #475569; font-size: 11px; font-weight: 680; white-space: nowrap; }
+      .score-badge { background: #ecfdf5; color: #047857; }
+      .risk-badge { background: #fff7ed; color: #c2410c; margin-right: 4px; }
       .activity {
-        margin: 10px 0;
+        margin: 12px 0 0;
         padding: 10px;
         border-radius: 8px;
-        background: #f8fafc;
-        border: 1px solid #e2e8f0;
+        background: rgba(248, 250, 252, 0.82);
+        border: 1px solid rgba(226, 232, 240, 0.95);
       }
       .activity-header {
         display: flex;
@@ -171,7 +269,7 @@ function renderPanel(state: { status: string; results: string[] }): void {
         justify-content: space-between;
         margin-bottom: 8px;
       }
-      .activity-title { font-weight: 650; font-size: 12px; color: #334155; }
+      .activity-title { font-weight: 720; font-size: 12px; color: #334155; }
       .activity-live {
         display: inline-flex;
         align-items: center;
@@ -190,8 +288,8 @@ function renderPanel(state: { status: string; results: string[] }): void {
       .activity-stat {
         padding: 8px;
         border-radius: 6px;
-        background: #fff;
-        border: 1px solid #e2e8f0;
+        background: rgba(255, 255, 255, 0.82);
+        border: 1px solid rgba(226, 232, 240, 0.95);
       }
       .activity-stat.goal-reached { border-color: #d97706; box-shadow: inset 0 0 0 1px rgba(217, 119, 6, 0.15); }
       .activity-stat-label {
@@ -210,7 +308,7 @@ function renderPanel(state: { status: string; results: string[] }): void {
         padding: 1px 5px;
         border-radius: 999px;
       }
-      .activity-count { font-size: 20px; font-weight: 750; line-height: 1.1; }
+      .activity-count { font-size: 20px; font-weight: 760; line-height: 1.1; }
       .activity-count span { font-size: 12px; font-weight: 500; color: #94a3b8; }
       .activity-bar {
         height: 4px;
@@ -236,45 +334,95 @@ function renderPanel(state: { status: string; results: string[] }): void {
         font-size: 11px;
         text-align: center;
       }
+      .empty {
+        margin-top: 10px;
+        padding: 13px;
+        border: 1px dashed rgba(148, 163, 184, 0.65);
+        border-radius: 8px;
+        color: #64748b;
+        background: rgba(248, 250, 252, 0.52);
+        font-size: 12px;
+      }
+      @media (prefers-color-scheme: dark) {
+        .panel { background: rgba(15, 23, 42, 0.92); border-color: rgba(148, 163, 184, 0.22); color: #e2e8f0; box-shadow: 0 24px 70px rgba(0, 0, 0, 0.46), 0 2px 10px rgba(0, 0, 0, 0.24); }
+        .title, .draft-text, button { color: #e2e8f0; }
+        .subtitle, .meta, .field-label, .toggle, .status, .activity-live { color: #94a3b8; }
+        .section-title, .activity-title, .result-title { color: #cbd5e1; }
+        .status-chip, .settings-row, .status, .activity, .empty { background: rgba(30, 41, 59, 0.72); border-color: rgba(148, 163, 184, 0.2); }
+        .mode-tabs { background: rgba(30, 41, 59, 0.72); border-color: rgba(148, 163, 184, 0.2); }
+        .mode-tab[aria-pressed="true"] { background: rgba(15, 23, 42, 0.92); border-color: rgba(148, 163, 184, 0.32); box-shadow: none; }
+        textarea, .result, .activity-stat, button { background: rgba(15, 23, 42, 0.72); border-color: rgba(148, 163, 184, 0.24); color: #e2e8f0; }
+        .result.selected { border-color: rgba(96, 165, 250, 0.7); box-shadow: inset 0 0 0 1px rgba(96, 165, 250, 0.18); }
+        textarea:focus { background: rgba(15, 23, 42, 0.92); }
+        button:hover:not([disabled]) { background: rgba(30, 41, 59, 0.92); border-color: rgba(203, 213, 225, 0.36); }
+        button.primary { background: #f8fafc; border-color: #f8fafc; color: #0f172a; }
+        .badge { background: rgba(51, 65, 85, 0.9); color: #cbd5e1; }
+      }
     </style>
     <div class="panel">
       <div class="top">
-        <div class="title">Tweet Helper</div>
-        <button id="collapse" title="Hide panel">Hide</button>
-      </div>
-      ${activityHtml}
-      <div class="field">
-        <div class="field-label">Topic <span>For new posts</span></div>
-        <textarea id="topic" placeholder="What do you want to post about?">${escapeHtml(panelInputs.topic)}</textarea>
-      </div>
-      <div class="field">
-        <div class="field-label">Angle <span>For replies</span></div>
-        <textarea id="angle" placeholder="Your take or reply direction">${escapeHtml(panelInputs.angle)}</textarea>
-      </div>
-      <div class="field">
-        <div class="field-label">
-          <span>Instructions</span>
-          <button class="clear-btn" id="clearInstructions" type="button" title="Clear instructions" ${panelInputs.instructions ? "" : "hidden"}>×</button>
+        <div class="brand">
+          <div class="title">Tweet Helper</div>
+          <div class="subtitle">Draft faster. Approve everything.</div>
         </div>
-        <textarea id="instructions" placeholder="Tone, constraints, things to include or avoid">${escapeHtml(panelInputs.instructions)}</textarea>
+        <div class="top-actions">
+          <div class="status-chip">${busyLabel}</div>
+          <button class="icon" id="collapse" title="Hide panel" aria-label="Hide panel">×</button>
+        </div>
       </div>
-      <div class="row">
-        <label class="toggle"><input id="cheapMode" type="checkbox" ${getCheapMode() ? "checked" : ""}/> Low cost</label>
-        <label class="toggle"><input id="advancedModel" type="checkbox" ${getAdvancedModel() ? "checked" : ""}/> Advanced</label>
-        <div class="meta">${isBusy ? "Working…" : "Ready"}</div>
+      <div class="section">
+        <div class="mode-tabs" role="group" aria-label="Tweet Helper mode">
+          <button class="mode-tab" data-mode="post" aria-pressed="${panelMode === "post"}">Post</button>
+          <button class="mode-tab" data-mode="reply" aria-pressed="${panelMode === "reply"}">Reply</button>
+          <button class="mode-tab" data-mode="scan" aria-pressed="${panelMode === "scan"}">Scan</button>
+        </div>
+        <div class="field" ${panelMode === "post" ? "" : "hidden"}>
+          <div class="field-label">Topic <span>New post</span></div>
+          <textarea id="topic" placeholder="What should this post say?">${escapeHtml(panelInputs.topic)}</textarea>
+        </div>
+        <div class="field" ${panelMode === "reply" ? "" : "hidden"}>
+          <div class="field-label">Reply angle <span>Focused composer</span></div>
+          <textarea id="angle" placeholder="Your take, counterpoint, or direction">${escapeHtml(panelInputs.angle)}</textarea>
+        </div>
+        <div class="field" ${panelMode === "scan" ? "hidden" : ""}>
+          <div class="field-label">
+            <span>Instructions</span>
+            <button class="clear-btn" id="clearInstructions" type="button" title="Clear instructions" ${panelInputs.instructions ? "" : "hidden"}>×</button>
+          </div>
+          <textarea id="instructions" placeholder="Tone, constraints, things to include or avoid">${escapeHtml(panelInputs.instructions)}</textarea>
+        </div>
+        <div class="primary-actions mode-actions" ${panelMode === "post" ? "" : "hidden"}>
+          <button class="primary" id="draftPost" ${isBusy ? "disabled" : ""}>Draft post</button>
+          <button id="scanFromPost" ${isBusy ? "disabled" : ""}>Scan posts</button>
+        </div>
+        <div class="primary-actions mode-actions" ${panelMode === "reply" ? "" : "hidden"}>
+          <button class="primary" id="draftComment" ${isBusy ? "disabled" : ""}>Draft reply</button>
+          <button id="scanFromReply" ${isBusy ? "disabled" : ""}>Scan posts</button>
+        </div>
+        <div class="primary-actions mode-actions" ${panelMode === "scan" ? "" : "hidden"}>
+          <button class="primary" id="scan" ${isBusy ? "disabled" : ""}>Scan visible posts</button>
+          <button id="draftCommentFromScan" ${isBusy ? "disabled" : ""}>Draft reply</button>
+        </div>
       </div>
-      <div class="controls">
-        <button class="primary" id="draftPost" ${isBusy ? "disabled" : ""}>Draft post</button>
-        <button id="draftComment" ${isBusy ? "disabled" : ""}>Draft reply</button>
-        <button id="scan" ${isBusy ? "disabled" : ""}>Scan visible posts</button>
-        <button id="insert" ${isBusy ? "disabled" : ""}>Insert selected</button>
-        <button id="copy" ${isBusy ? "disabled" : ""}>Copy selected</button>
+      <div class="section">
+        <div class="utility-actions">
+          <button id="insert" ${canUseSelection ? "" : "disabled"}>Insert</button>
+          <button id="copy" ${canUseSelection ? "" : "disabled"}>Copy</button>
+          <button id="clearSelection" ${hasSelection && !isBusy ? "" : "disabled"}>Clear</button>
+        </div>
+        <div class="selection-note">${hasSelection ? `Selected ${selectedSuggestion!.kind === "post" ? "post" : "reply"} draft` : "Select a draft to unlock insert and copy"}</div>
+        <div class="settings-row">
+          <label class="toggle"><input id="cheapMode" type="checkbox" ${getCheapMode() ? "checked" : ""}/> Low cost</label>
+          <label class="toggle"><input id="advancedModel" type="checkbox" ${getAdvancedModel() ? "checked" : ""}/> Advanced model</label>
+        </div>
       </div>
       <div class="status">${escapeHtml(state.status)}</div>
-      <div id="results">${state.results.join("")}</div>
+      <div id="results" class="results">${hasResults ? state.results.join("") : `<div class="empty">Drafts and scanned opportunities will appear here. Focus a composer for replies, or add a topic for a new post.</div>`}</div>
+      ${activityHtml}
     </div>
   `;
 
+  applySelectedDraftUi();
   startActivityTimer();
 
   panelRoot.getElementById("collapse")?.addEventListener("click", () => {
@@ -289,9 +437,22 @@ function renderPanel(state: { status: string; results: string[] }): void {
   panelRoot.getElementById("recordReply")?.addEventListener("click", () => void handleReplied());
   panelRoot.getElementById("draftPost")?.addEventListener("click", () => void draftPostFromPanel());
   panelRoot.getElementById("draftComment")?.addEventListener("click", () => void draftCommentFromPanel());
+  panelRoot.getElementById("draftCommentFromScan")?.addEventListener("click", () => void draftCommentFromPanel());
   panelRoot.getElementById("scan")?.addEventListener("click", () => void scanVisiblePosts());
+  panelRoot.getElementById("scanFromPost")?.addEventListener("click", () => void scanVisiblePosts());
+  panelRoot.getElementById("scanFromReply")?.addEventListener("click", () => void scanVisiblePosts());
   panelRoot.getElementById("insert")?.addEventListener("click", () => insertSelected());
   panelRoot.getElementById("copy")?.addEventListener("click", () => void copySelected());
+  panelRoot.getElementById("clearSelection")?.addEventListener("click", () => clearSelectedSuggestion());
+  for (const button of panelRoot.querySelectorAll<HTMLButtonElement>("[data-mode]")) {
+    button.addEventListener("click", () => {
+      const mode = button.dataset.mode;
+      if (mode === "post" || mode === "reply" || mode === "scan") {
+        panelMode = mode;
+        renderPanel(lastRendered);
+      }
+    });
+  }
   panelRoot.getElementById("cheapMode")?.addEventListener("change", (event) => {
     const target = event.target;
     if (target instanceof HTMLInputElement) {
@@ -316,7 +477,7 @@ function renderPanel(state: { status: string; results: string[] }): void {
       const kind = button.dataset.kind === "post" ? "post" : "comment";
       const stored = lastSuggestionById.get(id);
       selectedSuggestion = stored ?? { id, kind, text };
-      setStatus(`Selected ${kind} draft.`);
+      renderPanel({ ...lastRendered, status: `Selected ${kind} draft.` });
     });
   }
   for (const button of panelRoot.querySelectorAll<HTMLButtonElement>("[data-feedback]")) {
@@ -339,14 +500,17 @@ function enhanceComposers(): void {
     button.type = "button";
     button.textContent = "Suggest";
     Object.assign(button.style, {
-      marginTop: "6px",
-      padding: "5px 8px",
-      border: "1px solid rgb(203, 213, 225)",
-      borderRadius: "6px",
-      background: "rgb(248, 250, 252)",
-      color: "rgb(17, 24, 39)",
+      marginTop: "8px",
+      minHeight: "30px",
+      padding: "5px 11px",
+      border: "1px solid rgba(148, 163, 184, 0.45)",
+      borderRadius: "999px",
+      background: "rgba(255, 255, 255, 0.9)",
+      color: "rgb(15, 23, 42)",
       cursor: "pointer",
-      font: "12px system-ui, sans-serif"
+      font: "600 12px ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, \"SF Pro Text\", \"Segoe UI\", sans-serif",
+      boxShadow: "0 6px 18px rgba(15, 23, 42, 0.12)",
+      backdropFilter: "blur(18px) saturate(1.2)"
     });
     button.addEventListener("click", () => void draftForComposer(composer));
     parent.append(button);
@@ -371,6 +535,7 @@ async function draftForComposer(composer: HTMLElement): Promise<void> {
   showPanel();
   const sourcePost = getNearestSourcePost(composer);
   if (sourcePost?.text) {
+    panelMode = "reply";
     await generateComment(sourcePost, getComposerText(composer) || getAngleInput());
     return;
   }
@@ -379,10 +544,12 @@ async function draftForComposer(composer: HTMLElement): Promise<void> {
     setStatus("Type a topic in the composer or helper panel first.");
     return;
   }
+  panelMode = "post";
   await generatePost(topic);
 }
 
 async function draftPostFromPanel(): Promise<void> {
+  panelMode = "post";
   const composer = getTargetComposer();
   const topic = getTopicInput() || (composer ? getComposerText(composer) : "");
   if (!topic) {
@@ -393,6 +560,7 @@ async function draftPostFromPanel(): Promise<void> {
 }
 
 async function draftCommentFromPanel(): Promise<void> {
+  panelMode = "reply";
   const composer = getTargetComposer();
   const angle = getAngleInput();
   const sourcePost = composer ? getNearestSourcePost(composer) : undefined;
@@ -431,6 +599,8 @@ async function generateComment(sourcePost: SourcePost, angle?: string): Promise<
 }
 
 async function scanVisiblePosts(): Promise<void> {
+  panelMode = "scan";
+  selectedSuggestion = undefined;
   await withStatus("Scoring visible posts...", async () => {
     const posts = extractVisiblePosts();
     if (posts.length === 0) {
@@ -448,6 +618,7 @@ async function scanVisiblePosts(): Promise<void> {
 }
 
 async function draftCommentForScoredPost(id: string): Promise<void> {
+  panelMode = "reply";
   const post = extractVisiblePosts().find((item) => item.id === id);
   if (!post) {
     setStatus("That post is no longer visible. Scan again.");
@@ -467,21 +638,6 @@ function renderDraftSuggestions(
       { id: suggestion.id, kind, text: suggestion.text, ...(context ? { context } : {}) }
     ])
   );
-  const results = response.data.suggestions.map((suggestion, index) => {
-    const encodedText = encodeAttr(suggestion.text);
-    return `
-      <div class="result">
-        <div class="meta">${kind} option ${index + 1} · confidence ${Math.round(suggestion.confidence * 100)}%</div>
-        <div>${escapeHtml(suggestion.text)}</div>
-        <div class="meta">${escapeHtml(suggestion.rationale)}</div>
-        <div class="controls">
-          <button data-select data-id="${encodeAttr(suggestion.id)}" data-kind="${kind}" data-text="${encodedText}">Select</button>
-          <button data-feedback="accepted" data-id="${encodeAttr(suggestion.id)}">Good</button>
-          <button data-feedback="skipped" data-id="${encodeAttr(suggestion.id)}">Skip</button>
-        </div>
-      </div>
-    `;
-  });
   selectedSuggestion = response.data.suggestions[0]
     ? {
         id: response.data.suggestions[0].id,
@@ -490,6 +646,26 @@ function renderDraftSuggestions(
         ...(context ? { context } : {})
       }
     : undefined;
+  const results = response.data.suggestions.map((suggestion, index) => {
+    const encodedText = encodeAttr(suggestion.text);
+    const confidence = Math.round(suggestion.confidence * 100);
+    const kindLabel = kind === "post" ? "Post" : "Reply";
+    return `
+      <div class="result">
+        <div class="result-head">
+          <div class="result-title">${kindLabel} option ${index + 1}</div>
+          <span class="badge">${confidence}%</span>
+        </div>
+        <div class="draft-text">${escapeHtml(suggestion.text)}</div>
+        <div class="meta">${escapeHtml(suggestion.rationale)}</div>
+        <div class="controls">
+          <button class="primary" data-select data-id="${encodeAttr(suggestion.id)}" data-kind="${kind}" data-text="${encodedText}">Select</button>
+          <button data-feedback="accepted" data-id="${encodeAttr(suggestion.id)}">Good</button>
+          <button data-feedback="skipped" data-id="${encodeAttr(suggestion.id)}">Skip</button>
+        </div>
+      </div>
+    `;
+  });
   renderPanel({
     status: formatMetaStatus(`Generated ${response.data.suggestions.length} ${kind} drafts.`, response),
     results
@@ -498,11 +674,16 @@ function renderDraftSuggestions(
 
 function renderScoredPost(post: ScoredPost, source: SourcePost | undefined): string {
   const score = Math.round(post.score);
-  const sourceText = source?.text ? `<div>${escapeHtml(source.text.slice(0, 240))}</div>` : "";
-  const risks = post.risks.length ? `<div class="meta">Risks: ${escapeHtml(post.risks.join(", "))}</div>` : "";
+  const sourceText = source?.text ? `<div class="draft-text">${escapeHtml(source.text.slice(0, 240))}</div>` : "";
+  const risks = post.risks.length
+    ? `<div class="meta">${post.risks.map((risk) => `<span class="risk-badge">${escapeHtml(risk)}</span>`).join("")}</div>`
+    : "";
   return `
     <div class="result">
-      <div class="meta">${score}/100 · ${escapeHtml(post.recommendation)} · @${escapeHtml(source?.author ?? "unknown")}</div>
+      <div class="result-head">
+        <div class="result-title">@${escapeHtml(source?.author ?? "unknown")} · ${escapeHtml(post.recommendation)}</div>
+        <span class="badge score-badge">${score}/100</span>
+      </div>
       ${sourceText}
       <div class="meta">Why: ${escapeHtml(post.reason)}</div>
       <div class="meta">Angle: ${escapeHtml(post.suggestedAngle)}</div>
@@ -525,6 +706,26 @@ function insertSelected(): void {
   insertTextIntoComposer(composer, selectedSuggestion.text);
   clearInstructions();
   setStatus("Inserted draft into the focused composer. You still approve and post manually.");
+}
+
+function clearSelectedSuggestion(): void {
+  selectedSuggestion = undefined;
+  renderPanel({ ...lastRendered, status: "Selection cleared." });
+}
+
+function applySelectedDraftUi(): void {
+  if (!panelRoot) {
+    return;
+  }
+
+  for (const button of panelRoot.querySelectorAll<HTMLButtonElement>("[data-select]")) {
+    const isSelected = Boolean(selectedSuggestion?.id && button.dataset.id === selectedSuggestion.id);
+    const result = button.closest(".result");
+    result?.classList.toggle("selected", isSelected);
+    button.classList.toggle("is-selected", isSelected);
+    button.classList.toggle("primary", !isSelected);
+    button.textContent = isSelected ? "Selected" : "Select";
+  }
 }
 
 async function copySelected(): Promise<void> {
@@ -569,6 +770,28 @@ async function withStatus(status: string, action: () => Promise<void>): Promise<
   }
 }
 
+async function postJson<T>(path: string, body: unknown): Promise<T> {
+  try {
+    const backendUrl = await getBackendUrl();
+    const response = await fetch(`${backendUrl}${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    });
+    const json = (await response.json().catch(() => null)) as T | { error?: { message?: string } } | null;
+    if (!response.ok) {
+      const message = isErrorResponse(json) ? json.error?.message : undefined;
+      throw new Error(message ?? `Backend request failed with HTTP ${response.status}.`);
+    }
+    return json as T;
+  } catch (error) {
+    if (error instanceof TypeError) {
+      throw new Error("Could not reach the local backend. Start it, then check the extension backend URL.");
+    }
+    throw error;
+  }
+}
+
 async function getBackendUrl(): Promise<string> {
   if (typeof chrome !== "undefined" && chrome?.storage?.local) {
     const stored = await chrome.storage.local.get({ backendUrl: DEFAULT_BACKEND_URL });
@@ -577,17 +800,8 @@ async function getBackendUrl(): Promise<string> {
   return DEFAULT_BACKEND_URL;
 }
 
-async function postJson<T>(path: string, body: unknown): Promise<T> {
-  const backendUrl = await getBackendUrl();
-  const response = await fetch(`${backendUrl}${path}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body)
-  });
-  if (!response.ok) {
-    throw new Error(`Request failed ${response.status}: ${await response.text()}`);
-  }
-  return (await response.json()) as T;
+function isErrorResponse(value: unknown): value is { error?: { message?: string } } {
+  return typeof value === "object" && value !== null && "error" in value;
 }
 
 function showPanel(): void {
@@ -608,23 +822,71 @@ function showLauncher(): void {
   if (document.getElementById(LAUNCHER_ID)) {
     return;
   }
+  const isDark = window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? false;
   const button = document.createElement("button");
   button.id = LAUNCHER_ID;
   button.type = "button";
-  button.textContent = "Show Tweet Helper";
+  button.title = "Show Tweet Helper";
+  button.setAttribute("aria-label", "Show Tweet Helper");
+  button.innerHTML = `
+    <span class="tweet-helper-launcher-mark">TH</span>
+    <span class="tweet-helper-launcher-label">Tweet Helper</span>
+  `;
   Object.assign(button.style, {
     position: "fixed",
-    right: "18px",
-    bottom: "18px",
+    right: "20px",
+    bottom: "20px",
     zIndex: "2147483647",
-    border: "1px solid rgb(203, 213, 225)",
+    display: "inline-flex",
+    alignItems: "center",
+    gap: "9px",
+    width: "auto",
+    maxWidth: "calc(100vw - 32px)",
+    height: "44px",
+    border: isDark ? "1px solid rgba(148, 163, 184, 0.24)" : "1px solid rgba(15, 23, 42, 0.12)",
     borderRadius: "999px",
-    background: "rgb(17, 24, 39)",
-    color: "#fff",
+    background: isDark ? "rgba(15, 23, 42, 0.92)" : "rgba(255, 255, 255, 0.94)",
+    color: isDark ? "rgb(226, 232, 240)" : "rgb(15, 23, 42)",
     cursor: "pointer",
-    padding: "10px 12px",
-    font: "13px system-ui, -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif",
-    boxShadow: "0 16px 40px rgba(15, 23, 42, 0.2)"
+    padding: "0 13px 0 6px",
+    font: "700 13px/1 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, \"SF Pro Text\", \"Segoe UI\", sans-serif",
+    letterSpacing: "0",
+    boxShadow: "0 16px 40px rgba(15, 23, 42, 0.2), 0 2px 8px rgba(15, 23, 42, 0.08)",
+    backdropFilter: "blur(18px) saturate(1.25)",
+    WebkitBackdropFilter: "blur(18px) saturate(1.25)",
+    transition: "transform 0.14s ease, box-shadow 0.14s ease, background 0.14s ease"
+  });
+  const mark = button.querySelector<HTMLElement>(".tweet-helper-launcher-mark");
+  if (mark) {
+    Object.assign(mark.style, {
+      display: "inline-flex",
+      alignItems: "center",
+      justifyContent: "center",
+      width: "32px",
+      height: "32px",
+      borderRadius: "999px",
+      background: isDark ? "rgb(248, 250, 252)" : "rgb(15, 23, 42)",
+      color: isDark ? "rgb(15, 23, 42)" : "#fff",
+      fontSize: "11px",
+      fontWeight: "800",
+      flex: "0 0 auto"
+    });
+  }
+  const label = button.querySelector<HTMLElement>(".tweet-helper-launcher-label");
+  if (label) {
+    Object.assign(label.style, {
+      overflow: "hidden",
+      textOverflow: "ellipsis",
+      whiteSpace: "nowrap"
+    });
+  }
+  button.addEventListener("mouseenter", () => {
+    button.style.transform = "translateY(-1px)";
+    button.style.boxShadow = "0 20px 46px rgba(15, 23, 42, 0.24), 0 3px 10px rgba(15, 23, 42, 0.1)";
+  });
+  button.addEventListener("mouseleave", () => {
+    button.style.transform = "translateY(0)";
+    button.style.boxShadow = "0 16px 40px rgba(15, 23, 42, 0.2), 0 2px 8px rgba(15, 23, 42, 0.08)";
   });
   button.addEventListener("click", () => {
     showPanel();

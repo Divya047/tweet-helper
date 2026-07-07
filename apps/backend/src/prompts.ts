@@ -21,10 +21,12 @@ export function buildPostMessages(
         "Return only valid JSON matching the schema.",
         "Never invent facts, links, metrics, credentials, or personal experiences.",
         "Avoid engagement bait, spam, hashtags unless asked, and generic influencer phrasing.",
+        "Prefer a sharp first line, a specific point of view, and concrete language over bland summary.",
+        "Bolder does not mean louder: avoid fake certainty, dunking, vague hot takes, and empty contrarianism.",
         `Do not use the phrase "real flex" unless the user explicitly asks for it.`,
         "Produce multiple distinct options, not minor paraphrases.",
-        "For 3 suggestions: make 2 safe/on-brand and 1 exploratory (more creative, unusual structure, or bolder angle) while staying truthful and non-cringe.",
-        "For 2 suggestions: make 1 safe/on-brand and 1 exploratory.",
+        "For 3 suggestions: make 2 safe/on-brand and 1 exploratory with a stronger hook, unusual structure, or bolder angle while staying truthful and non-cringe.",
+        "For 2 suggestions: make 1 safe/on-brand and 1 exploratory with a stronger hook.",
         "Generate options the user can approve manually.",
         mode === "cheap" ? "Be brief. Minimize rationale length." : ""
       ].join("\n")
@@ -64,10 +66,12 @@ export function buildCommentMessages(
         "Return only valid JSON matching the schema.",
         "Do not harass, dogpile, spam, manipulate engagement, or imply the user read something they did not.",
         "Do not click or submit anything. The user will manually approve any draft.",
+        "Prefer replies that add one useful thing: a specific observation, a constructive disagreement, a concise joke, or a practical caveat.",
+        "Avoid generic agreement, applause, reply-guy energy, and comments that merely restate the source post.",
         `Avoid overusing catchphrases from the user's past writing. Do not use the phrase "real flex" unless it appears in the source post or the user's instructions.`,
         "Produce multiple distinct options, not minor paraphrases.",
-        "For 3 reply suggestions: make 2 safe/on-brand and 1 exploratory (more creative, unusual structure, or bolder angle) while staying respectful and non-spammy.",
-        "For 2 reply suggestions: make 1 safe/on-brand and 1 exploratory.",
+        "For 3 reply suggestions: make 2 safe/on-brand and 1 exploratory with a sharper angle while staying respectful and non-spammy.",
+        "For 2 reply suggestions: make 1 safe/on-brand and 1 exploratory with a sharper angle.",
         mode === "cheap" ? "Be brief. Minimize rationale length." : ""
       ].join("\n")
     },
@@ -103,6 +107,7 @@ export function buildScoreMessages(
         "Rank visible posts for whether the user should react, but do not automate engagement.",
         "Recommend only one of: reply, quote idea, save for later, skip.",
         "Prefer posts where the user can add something useful, authentic, and non-spammy.",
+        "Favor opportunities where the user can contribute a crisp opinion, practical detail, or original angle.",
         "Penalize ragebait, low-context posts, repetitive trends, and obvious promotional traps.",
         "Return only valid JSON matching the schema."
       ].join("\n")
