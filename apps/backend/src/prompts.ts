@@ -11,6 +11,8 @@ export function buildPostMessages(
   styleProfileJson: string | undefined,
   examples: WritingExample[]
 ): ChatMessage[] {
+  const mode = request.mode === "cheap" ? "cheap" : "standard";
+  const suggestionCount = mode === "cheap" ? 2 : 3;
   return [
     {
       role: "system",
@@ -19,7 +21,12 @@ export function buildPostMessages(
         "Return only valid JSON matching the schema.",
         "Never invent facts, links, metrics, credentials, or personal experiences.",
         "Avoid engagement bait, spam, hashtags unless asked, and generic influencer phrasing.",
-        "Generate options the user can approve manually."
+        `Do not use the phrase "real flex" unless the user explicitly asks for it.`,
+        "Produce multiple distinct options, not minor paraphrases.",
+        "For 3 suggestions: make 2 safe/on-brand and 1 exploratory (more creative, unusual structure, or bolder angle) while staying truthful and non-cringe.",
+        "For 2 suggestions: make 1 safe/on-brand and 1 exploratory.",
+        "Generate options the user can approve manually.",
+        mode === "cheap" ? "Be brief. Minimize rationale length." : ""
       ].join("\n")
     },
     {
@@ -33,7 +40,7 @@ export function buildPostMessages(
           instructions: request.instructions ?? "",
           styleProfile: styleProfileJson ? JSON.parse(styleProfileJson) : null,
           similarPastWriting: examples.map(formatExample),
-          requiredOutput: "3 suggestions with text, rationale, confidence"
+          requiredOutput: `Return ${suggestionCount} suggestions with text, rationale, confidence. Ensure one suggestion is explicitly exploratory/different.`
         },
         null,
         2
@@ -47,6 +54,8 @@ export function buildCommentMessages(
   styleProfileJson: string | undefined,
   examples: WritingExample[]
 ): ChatMessage[] {
+  const mode = request.mode === "cheap" ? "cheap" : "standard";
+  const suggestionCount = mode === "cheap" ? 2 : 3;
   return [
     {
       role: "system",
@@ -54,7 +63,12 @@ export function buildCommentMessages(
         "You write concise X replies/comments for the user in their authentic voice.",
         "Return only valid JSON matching the schema.",
         "Do not harass, dogpile, spam, manipulate engagement, or imply the user read something they did not.",
-        "Do not click or submit anything. The user will manually approve any draft."
+        "Do not click or submit anything. The user will manually approve any draft.",
+        `Avoid overusing catchphrases from the user's past writing. Do not use the phrase "real flex" unless it appears in the source post or the user's instructions.`,
+        "Produce multiple distinct options, not minor paraphrases.",
+        "For 3 reply suggestions: make 2 safe/on-brand and 1 exploratory (more creative, unusual structure, or bolder angle) while staying respectful and non-spammy.",
+        "For 2 reply suggestions: make 1 safe/on-brand and 1 exploratory.",
+        mode === "cheap" ? "Be brief. Minimize rationale length." : ""
       ].join("\n")
     },
     {
@@ -67,7 +81,7 @@ export function buildCommentMessages(
           instructions: request.instructions ?? "",
           styleProfile: styleProfileJson ? JSON.parse(styleProfileJson) : null,
           similarPastWriting: examples.map(formatExample),
-          requiredOutput: "3 reply suggestions with text, rationale, confidence"
+          requiredOutput: `Return ${suggestionCount} reply suggestions with text, rationale, confidence. Ensure one suggestion is explicitly exploratory/different.`
         },
         null,
         2

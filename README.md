@@ -18,7 +18,7 @@ npm run build
 npm run backend:dev
 ```
 
-Set `TOGETHER_API_KEY` in `.env.local`. The default model is `zai-org/GLM-5.2`.
+Set `TOGETHER_API_KEY` in `.env.local`. The default model is `MiniMaxAI/MiniMax-M3` (toggle **Advanced** in the panel to use `zai-org/GLM-5.2` per request).
 
 Optional `.env.local` values:
 

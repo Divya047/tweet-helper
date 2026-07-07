@@ -15,6 +15,7 @@ export interface JsonCompletionRequest {
   schema: Record<string, unknown>;
   maxTokens: number;
   temperature?: number;
+  model?: string;
 }
 
 export interface JsonCompletionResult {
@@ -23,39 +24,43 @@ export interface JsonCompletionResult {
   outputTokens: number;
   costUsd: number;
   rawText: string;
+  model: string;
 }
 
 export interface TogetherClient {
-  model: string;
+  defaultModel: string;
   completeJson(request: JsonCompletionRequest): Promise<JsonCompletionResult>;
 }
 
 export function createTogetherClient(apiKey: string | undefined, model = DEFAULT_MODEL): TogetherClient {
   return {
-    model,
+    defaultModel: model,
     async completeJson(request) {
       if (!apiKey) {
         throw new Error("Missing TOGETHER_API_KEY. Add it to .env.local before generating or scoring.");
       }
 
-      const first = await requestJsonCompletion(apiKey, model, request);
+      const chosenModel = typeof request.model === "string" && request.model.trim() ? request.model : model;
+      const first = await requestJsonCompletion(apiKey, chosenModel, request);
       try {
         return {
           value: parseJsonObject(first.rawText),
           inputTokens: first.inputTokens,
           outputTokens: first.outputTokens,
           costUsd: first.costUsd,
-          rawText: first.rawText
+          rawText: first.rawText,
+          model: chosenModel
         };
       } catch (error) {
-        const repaired = await requestJsonCompletion(apiKey, model, repairRequest(request, first.rawText));
+        const repaired = await requestJsonCompletion(apiKey, chosenModel, repairRequest(request, first.rawText));
         try {
           return {
             value: parseJsonObject(repaired.rawText),
             inputTokens: first.inputTokens + repaired.inputTokens,
             outputTokens: first.outputTokens + repaired.outputTokens,
             costUsd: first.costUsd + repaired.costUsd,
-            rawText: repaired.rawText
+            rawText: repaired.rawText,
+            model: chosenModel
           };
         } catch {
           throw error;
@@ -107,7 +112,8 @@ async function requestJsonCompletion(
         inputTokens,
         outputTokens,
         costUsd: estimateTogetherCostUsd(inputTokens, outputTokens),
-        rawText
+        rawText,
+        model
       };
 }
 
@@ -144,7 +150,7 @@ export const draftResponseSchema = {
   properties: {
     suggestions: {
       type: "array",
-      minItems: 3,
+      minItems: 1,
       maxItems: 3,
       items: {
         type: "object",

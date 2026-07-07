@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import cors from "@fastify/cors";
 import Fastify, { type FastifyInstance } from "fastify";
 import {
+  ADVANCED_MODEL,
   DEFAULT_MODEL,
   estimateTokens,
   validateDraftResponse,
@@ -83,7 +84,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Bui
 
   app.get("/health", async () => ({
     ok: true,
-    model: togetherClient.model,
+    model: togetherClient.defaultModel,
     settings: getSettings(db)
   }));
 
@@ -110,6 +111,8 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Bui
   app.post<{ Body: GeneratePostRequest }>("/api/generate/post", async (request) => {
     assertNonEmptyString(request.body?.topic, "topic");
     const body = request.body;
+    const mode = body.mode === "cheap" ? "cheap" : "standard";
+    const requestedModel = body.model === "advanced" ? ADVANCED_MODEL : undefined;
     const styleProfile = getStyleProfile(db);
     const examples = selectStyleExamples(db, `${body.topic} ${body.instructions ?? ""}`, "post");
     const messages = buildPostMessages(body, styleProfile, examples);
@@ -117,13 +120,14 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Bui
       db,
       togetherClient,
       endpoint: "generate_post",
-      cacheInput: { body, styleProfile, examples: examples.map((example) => example.id) },
+      cacheInput: { body, styleProfile, examples: examples.map((example) => example.id), model: requestedModel ?? "default" },
       request: {
         messages,
         schemaName: "DraftResponse",
         schema: draftResponseSchema,
-        maxTokens: 700,
-        temperature: 0.8
+        maxTokens: mode === "cheap" ? 360 : 700,
+        temperature: mode === "cheap" ? 0.65 : 0.8,
+        ...(requestedModel ? { model: requestedModel } : {})
       },
       validate: validateDraftResponse
     });
@@ -133,6 +137,8 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Bui
   app.post<{ Body: GenerateCommentRequest }>("/api/generate/comment", async (request) => {
     assertNonEmptyString(request.body?.sourcePost?.text, "sourcePost.text");
     const body = request.body;
+    const mode = body.mode === "cheap" ? "cheap" : "standard";
+    const requestedModel = body.model === "advanced" ? ADVANCED_MODEL : undefined;
     const styleProfile = getStyleProfile(db);
     const examples = selectStyleExamples(
       db,
@@ -144,13 +150,14 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Bui
       db,
       togetherClient,
       endpoint: "generate_comment",
-      cacheInput: { body, styleProfile, examples: examples.map((example) => example.id) },
+      cacheInput: { body, styleProfile, examples: examples.map((example) => example.id), model: requestedModel ?? "default" },
       request: {
         messages,
         schemaName: "DraftResponse",
         schema: draftResponseSchema,
-        maxTokens: 650,
-        temperature: 0.75
+        maxTokens: mode === "cheap" ? 340 : 650,
+        temperature: mode === "cheap" ? 0.6 : 0.75,
+        ...(requestedModel ? { model: requestedModel } : {})
       },
       validate: validateDraftResponse
     });
@@ -188,7 +195,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Bui
         messages,
         schemaName: "ScoreVisiblePostsResponse",
         schema: scoreResponseSchema,
-        maxTokens: 10_000,
+        maxTokens: 1800,
         temperature: 0.35
       },
       validate: validateScoreVisiblePostsResponse
@@ -275,7 +282,7 @@ async function runCachedJsonGeneration<T>(options: {
 }> {
   const model = getSettings(options.db).model;
   const cacheKey = cacheKeyFor({
-    model: typeof model === "string" ? model : DEFAULT_MODEL,
+    model: typeof options.request.model === "string" ? options.request.model : typeof model === "string" ? model : DEFAULT_MODEL,
     endpoint: options.endpoint,
     input: options.cacheInput
   });
@@ -286,7 +293,7 @@ async function runCachedJsonGeneration<T>(options: {
       data: options.validate(JSON.parse(cached.responseJson)),
       meta: {
         cached: true,
-        model: options.togetherClient.model,
+        model: typeof options.request.model === "string" ? options.request.model : options.togetherClient.defaultModel,
         estimatedCostUsd: cached.costUsd,
         inputTokens: cached.inputTokens,
         outputTokens: cached.outputTokens
@@ -311,7 +318,7 @@ async function runCachedJsonGeneration<T>(options: {
     data,
     meta: {
       cached: false,
-      model: options.togetherClient.model,
+      model: completion.model,
       estimatedCostUsd: completion.costUsd,
       inputTokens: completion.inputTokens,
       outputTokens: completion.outputTokens
@@ -323,7 +330,7 @@ export function createMockTogetherClient(
   responseFactory: (request: JsonCompletionRequest) => unknown
 ): TogetherClient {
   return {
-    model: DEFAULT_MODEL,
+    defaultModel: DEFAULT_MODEL,
     async completeJson(request: JsonCompletionRequest): Promise<JsonCompletionResult> {
       const value = responseFactory(request);
       const rawText = JSON.stringify(value);
@@ -332,7 +339,8 @@ export function createMockTogetherClient(
         inputTokens: estimateTokens(messagesToTokenText(request.messages)),
         outputTokens: estimateTokens(rawText),
         costUsd: 0,
-        rawText
+        rawText,
+        model: typeof request.model === "string" && request.model.trim() ? request.model : DEFAULT_MODEL
       };
     }
   };

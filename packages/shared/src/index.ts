@@ -1,4 +1,5 @@
-export const DEFAULT_MODEL = "zai-org/GLM-5.2";
+export const DEFAULT_MODEL = "MiniMaxAI/MiniMax-M3";
+export const ADVANCED_MODEL = "zai-org/GLM-5.2";
 
 export const TOGETHER_GLM_5_2_PRICING = {
   inputPerMillion: 1.4,
@@ -23,12 +24,16 @@ export interface GeneratePostRequest {
   goal?: "authentic" | "engagement" | "business" | string;
   length?: "short" | "medium" | "thread";
   instructions?: string;
+  mode?: "standard" | "cheap";
+  model?: "standard" | "advanced";
 }
 
 export interface GenerateCommentRequest {
   sourcePost: SourcePost;
   angle?: string;
   instructions?: string;
+  mode?: "standard" | "cheap";
+  model?: "standard" | "advanced";
 }
 
 export interface VisiblePost extends SourcePost {
