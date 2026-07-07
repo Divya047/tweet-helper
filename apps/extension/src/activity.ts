@@ -44,9 +44,16 @@ function emptyState(dayKey = getDayKey()): ActivityState {
   };
 }
 
-export function normalizeState(state: ActivityState, now = Date.now()): ActivityState {
+export function normalizeState(state: Partial<ActivityState> | null | undefined, now = Date.now()): ActivityState {
   const today = getDayKey(new Date(now));
-  let next = { ...state };
+  let next: ActivityState = {
+    dayKey: typeof state?.dayKey === "string" ? state.dayKey : today,
+    dailyPosts: nonNegativeInteger(state?.dailyPosts),
+    dailyReplies: nonNegativeInteger(state?.dailyReplies),
+    batchPosts: nonNegativeInteger(state?.batchPosts),
+    batchReplies: nonNegativeInteger(state?.batchReplies),
+    batchWindowStart: typeof state?.batchWindowStart === "number" ? state.batchWindowStart : null
+  };
 
   if (next.dayKey !== today) {
     next = {
@@ -108,10 +115,14 @@ export function getBarColor(ratio: number): string {
 
 async function loadRawState(): Promise<ActivityState> {
   if (typeof chrome !== "undefined" && chrome?.storage?.local) {
-    const stored = await chrome.storage.local.get(STORAGE_KEY);
-    const value = stored[STORAGE_KEY];
-    if (value && typeof value === "object") {
-      return normalizeState(value as ActivityState);
+    try {
+      const stored = await chrome.storage.local.get(STORAGE_KEY);
+      const value = stored[STORAGE_KEY];
+      if (value && typeof value === "object") {
+        return normalizeState(value as Partial<ActivityState>);
+      }
+    } catch {
+      return emptyState();
     }
   }
   return emptyState();
@@ -119,7 +130,11 @@ async function loadRawState(): Promise<ActivityState> {
 
 async function saveState(state: ActivityState): Promise<void> {
   if (typeof chrome !== "undefined" && chrome?.storage?.local) {
-    await chrome.storage.local.set({ [STORAGE_KEY]: state });
+    try {
+      await chrome.storage.local.set({ [STORAGE_KEY]: state });
+    } catch {
+      // Extension reloads can invalidate the context while the content script is still running.
+    }
   }
 }
 
@@ -160,4 +175,8 @@ export async function recordPost(): Promise<ActivitySnapshot> {
 
 export async function recordReply(): Promise<ActivitySnapshot> {
   return recordAction("reply");
+}
+
+function nonNegativeInteger(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
 }

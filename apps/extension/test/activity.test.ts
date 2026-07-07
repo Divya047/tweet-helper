@@ -52,6 +52,23 @@ describe("activity tracker", () => {
     expect(normalized.batchWindowStart).toBeNull();
   });
 
+  it("normalizes malformed persisted values", () => {
+    const normalized = normalizeState({
+      dayKey: "2026-07-07",
+      dailyPosts: Number.NaN,
+      dailyReplies: -2,
+      batchPosts: 1.8,
+      batchReplies: "bad" as never,
+      batchWindowStart: "bad" as never
+    });
+
+    expect(normalized.dailyPosts).toBe(0);
+    expect(normalized.dailyReplies).toBe(0);
+    expect(normalized.batchPosts).toBe(0);
+    expect(normalized.batchReplies).toBe(0);
+    expect(normalized.batchWindowStart).toBeNull();
+  });
+
   it("disables post button only when the daily cap is reached", () => {
     const windowStart = Date.now() - 60_000;
     const atDailyCap = buildSnapshot({ ...base, dailyPosts: 8, batchWindowStart: windowStart }, Date.now());
