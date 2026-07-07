@@ -18,6 +18,10 @@ export interface WritingExample extends Required<Omit<WritingExampleInput, "repl
   replyToUser: string | null;
 }
 
+export interface WritingExampleFilters {
+  excludeXArchiveCreatedAtSince?: string;
+}
+
 export interface CachedGeneration {
   responseJson: string;
   inputTokens: number;
@@ -195,7 +199,25 @@ export function getWritingExamples(db: AppDatabase, limit = 500): WritingExample
     .all(limit) as unknown as WritingExample[];
 }
 
-export function getSimilarExamples(db: AppDatabase, query: string, kind: ContentKind, limit = 8): WritingExample[] {
+export function getRecentXArchiveExamples(db: AppDatabase, isoTimestamp: string, limit = 100): WritingExample[] {
+  return db
+    .prepare(
+      `SELECT rowid, id, kind, text, created_at as createdAt, source, reply_to_user as replyToUser
+       FROM writing_examples
+       WHERE source = 'x-archive' AND created_at >= ?
+       ORDER BY created_at DESC
+       LIMIT ?`
+    )
+    .all(isoTimestamp, limit) as unknown as WritingExample[];
+}
+
+export function getSimilarExamples(
+  db: AppDatabase,
+  query: string,
+  kind: ContentKind,
+  limit = 8,
+  filters: WritingExampleFilters = {}
+): WritingExample[] {
   const ftsQuery = buildFtsQuery(query);
   if (ftsQuery) {
     try {
@@ -205,10 +227,11 @@ export function getSimilarExamples(db: AppDatabase, query: string, kind: Content
            FROM writing_examples_fts f
            JOIN writing_examples e ON e.rowid = f.rowid
            WHERE writing_examples_fts MATCH ? AND e.kind IN (?, 'reply', 'comment')
+             AND (? IS NULL OR NOT (e.source = 'x-archive' AND e.created_at >= ?))
            ORDER BY bm25(writing_examples_fts)
            LIMIT ?`
         )
-        .all(ftsQuery, kind, limit) as unknown as WritingExample[];
+        .all(ftsQuery, kind, filters.excludeXArchiveCreatedAtSince ?? null, filters.excludeXArchiveCreatedAtSince ?? null, limit) as unknown as WritingExample[];
       if (rows.length > 0) {
         return rows;
       }
@@ -223,10 +246,11 @@ export function getSimilarExamples(db: AppDatabase, query: string, kind: Content
       `SELECT rowid, id, kind, text, created_at as createdAt, source, reply_to_user as replyToUser
        FROM writing_examples
        WHERE normalized LIKE ? AND kind IN (?, 'reply', 'comment')
+         AND (? IS NULL OR NOT (source = 'x-archive' AND created_at >= ?))
        ORDER BY created_at DESC
        LIMIT ?`
     )
-    .all(normalized, kind, limit) as unknown as WritingExample[];
+    .all(normalized, kind, filters.excludeXArchiveCreatedAtSince ?? null, filters.excludeXArchiveCreatedAtSince ?? null, limit) as unknown as WritingExample[];
 }
 
 export function getStyleProfile(db: AppDatabase): string | undefined {

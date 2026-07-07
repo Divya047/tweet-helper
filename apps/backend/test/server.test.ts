@@ -1,29 +1,39 @@
 import { describe, expect, it } from "vitest";
 import { buildServer, createMockTogetherClient } from "../src/server.js";
 import { openDatabase } from "../src/db.js";
+import type { JsonCompletionRequest } from "../src/together.js";
 
 describe("backend routes", () => {
   it("imports archive data and generates mocked post drafts without network calls", async () => {
     const db = openDatabase(":memory:");
-    const mockTogether = createMockTogetherClient(() => ({
-      suggestions: [
-        {
-          text: "Local tools work best when they stay boring and useful.",
-          rationale: "Concise and practical.",
-          confidence: 0.84
-        },
-        {
-          text: "The best side projects are the ones you can trust locally.",
-          rationale: "Matches the topic.",
-          confidence: 0.78
-        },
-        {
-          text: "Small automation, manual approval, less regret.",
-          rationale: "Short and direct.",
-          confidence: 0.76
-        }
-      ]
-    }));
+    const requests: JsonCompletionRequest[] = [];
+    const mockTogether = createMockTogetherClient((request) => {
+      requests.push(request);
+      return {
+        suggestions: [
+          {
+            text: "I like local-first tools.",
+            rationale: "Copied too closely.",
+            confidence: 0.9
+          },
+          {
+            text: "Local tools work best when they stay boring and useful.",
+            rationale: "Concise and practical.",
+            confidence: 0.84
+          },
+          {
+            text: "The best side projects are the ones you can trust locally.",
+            rationale: "Matches the topic.",
+            confidence: 0.78
+          },
+          {
+            text: "Small automation, manual approval, less regret.",
+            rationale: "Short and direct.",
+            confidence: 0.76
+          }
+        ]
+      };
+    });
     const { app } = await buildServer({
       db,
       config: { dbPath: ":memory:", dailyBudgetUsd: 10, monthlyBudgetUsd: 10 },
@@ -49,6 +59,10 @@ describe("backend routes", () => {
 
     expect(generateResponse.statusCode).toBe(200);
     expect(generateResponse.json().data.suggestions).toHaveLength(3);
+    expect(generateResponse.json().data.suggestions.map((suggestion: { text: string }) => suggestion.text)).not.toContain(
+      "I like local-first tools."
+    );
+    expect(JSON.stringify(requests[0]?.messages)).not.toContain("I like local-first tools.");
     expect(generateResponse.json().meta.cached).toBe(false);
 
     const cachedResponse = await app.inject({

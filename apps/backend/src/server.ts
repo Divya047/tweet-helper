@@ -7,6 +7,7 @@ import {
   estimateTokens,
   validateDraftResponse,
   validateScoreVisiblePostsResponse,
+  type DraftResponse,
   type FeedbackRequest,
   type GenerateCommentRequest,
   type GeneratePostRequest,
@@ -17,20 +18,23 @@ import { assertWithinBudget } from "./budget.js";
 import { getConfig, loadEnvFiles, type AppConfig } from "./config.js";
 import {
   getCachedGeneration,
+  getRecentXArchiveExamples,
   getSettings,
   getStyleProfile,
   initializeSettings,
   logUsage,
+  normalizeForStorage,
   openDatabase,
   saveCachedGeneration,
   saveFeedback,
   updateSettings,
   upsertWritingExamples,
   type AppDatabase,
+  type WritingExample,
   type WritingExampleInput
 } from "./db.js";
 import { buildCommentMessages, buildPostMessages, buildScoreMessages, type ChatMessage } from "./prompts.js";
-import { rebuildStyleProfile, selectStyleExamples } from "./style.js";
+import { RECENT_ARCHIVE_EXAMPLE_WINDOW_MS, rebuildStyleProfile, selectStyleExamples } from "./style.js";
 import {
   cacheKeyFor,
   createTogetherClient,
@@ -115,12 +119,19 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Bui
     const requestedModel = body.model === "advanced" ? ADVANCED_MODEL : undefined;
     const styleProfile = getStyleProfile(db);
     const examples = selectStyleExamples(db, `${body.topic} ${body.instructions ?? ""}`, "post");
+    const recentArchiveExamples = getRecentXArchiveExamples(db, recentArchiveCutoff());
     const messages = buildPostMessages(body, styleProfile, examples);
     const response = await runCachedJsonGeneration({
       db,
       togetherClient,
       endpoint: "generate_post",
-      cacheInput: { body, styleProfile, examples: examples.map((example) => example.id), model: requestedModel ?? "default" },
+      cacheInput: {
+        body,
+        styleProfile,
+        examples: examples.map((example) => example.id),
+        blockedExamples: recentArchiveExamples.map((example) => example.id),
+        model: requestedModel ?? "default"
+      },
       request: {
         messages,
         schemaName: "DraftResponse",
@@ -129,7 +140,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Bui
         temperature: mode === "cheap" ? 0.65 : 0.8,
         ...(requestedModel ? { model: requestedModel } : {})
       },
-      validate: validateDraftResponse
+      validate: (value) => removeRecentArchiveCopies(validateDraftResponse(value), recentArchiveExamples)
     });
     return response;
   });
@@ -145,12 +156,19 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Bui
       `${body.sourcePost.text} ${body.angle ?? ""} ${body.instructions ?? ""}`,
       "comment"
     );
+    const recentArchiveExamples = getRecentXArchiveExamples(db, recentArchiveCutoff());
     const messages = buildCommentMessages(body, styleProfile, examples);
     const response = await runCachedJsonGeneration({
       db,
       togetherClient,
       endpoint: "generate_comment",
-      cacheInput: { body, styleProfile, examples: examples.map((example) => example.id), model: requestedModel ?? "default" },
+      cacheInput: {
+        body,
+        styleProfile,
+        examples: examples.map((example) => example.id),
+        blockedExamples: recentArchiveExamples.map((example) => example.id),
+        model: requestedModel ?? "default"
+      },
       request: {
         messages,
         schemaName: "DraftResponse",
@@ -159,7 +177,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Bui
         temperature: mode === "cheap" ? 0.6 : 0.75,
         ...(requestedModel ? { model: requestedModel } : {})
       },
-      validate: validateDraftResponse
+      validate: (value) => removeRecentArchiveCopies(validateDraftResponse(value), recentArchiveExamples)
     });
     return response;
   });
@@ -261,6 +279,23 @@ function importArchiveInput(body: ImportArchiveBody): ImportArchiveParsed {
     return parseXArchiveZip(new Uint8Array(buffer));
   }
   throw new Error("Provide archivePath, archiveBase64, or tweetsJsText.");
+}
+
+function recentArchiveCutoff(): string {
+  return new Date(Date.now() - RECENT_ARCHIVE_EXAMPLE_WINDOW_MS).toISOString();
+}
+
+function removeRecentArchiveCopies(response: DraftResponse, recentExamples: WritingExample[]): DraftResponse {
+  if (recentExamples.length === 0) {
+    return response;
+  }
+
+  const blockedTexts = new Set(recentExamples.map((example) => normalizeForStorage(example.text)).filter(Boolean));
+  const suggestions = response.suggestions.filter((suggestion) => !blockedTexts.has(normalizeForStorage(suggestion.text)));
+  if (suggestions.length === 0) {
+    throw new Error("Generated drafts copied recent archive tweets. Try again with more specific instructions.");
+  }
+  return { suggestions };
 }
 
 async function runCachedJsonGeneration<T>(options: {

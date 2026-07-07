@@ -1,10 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildSnapshot,
-  formatCountdown,
   getBarColor,
-  getWindowEndsAt,
-  LIMITS,
   normalizeState,
   type ActivityState
 } from "../src/activity.js";
@@ -38,7 +35,7 @@ describe("activity tracker", () => {
     expect(normalized.batchWindowStart).toBeNull();
   });
 
-  it("resets batch counters after the 3-hour window", () => {
+  it("clears legacy batch counters during normalization", () => {
     const windowStart = Date.parse("2026-07-07T10:00:00");
     const state: ActivityState = {
       ...base,
@@ -47,7 +44,7 @@ describe("activity tracker", () => {
       batchReplies: 6,
       batchWindowStart: windowStart
     };
-    const now = windowStart + LIMITS.batchWindowMs + 1;
+    const now = windowStart + 60_000;
     const normalized = normalizeState(state, now);
     expect(normalized.dailyPosts).toBe(2);
     expect(normalized.batchPosts).toBe(0);
@@ -55,7 +52,7 @@ describe("activity tracker", () => {
     expect(normalized.batchWindowStart).toBeNull();
   });
 
-  it("disables post button when daily or batch cap is reached", () => {
+  it("disables post button only when the daily cap is reached", () => {
     const windowStart = Date.now() - 60_000;
     const atDailyCap = buildSnapshot({ ...base, dailyPosts: 8, batchWindowStart: windowStart }, Date.now());
     expect(atDailyCap.canPost).toBe(false);
@@ -65,24 +62,18 @@ describe("activity tracker", () => {
       { ...base, dailyPosts: 1, batchPosts: 2, batchWindowStart: windowStart },
       Date.now()
     );
-    expect(atBatchCap.canPost).toBe(false);
-    expect(atBatchCap.postDisabledReason).toMatch(/^Recharge in /);
+    expect(atBatchCap.canPost).toBe(true);
+    expect(atBatchCap.postDisabledReason).toBeNull();
   });
 
-  it("disables reply button when batch cap is reached", () => {
+  it("keeps reply button enabled when legacy batch cap is reached", () => {
     const windowStart = Date.now() - 60_000;
     const snapshot = buildSnapshot(
       { ...base, dailyReplies: 5, batchReplies: 6, batchWindowStart: windowStart },
       Date.now()
     );
-    expect(snapshot.canReply).toBe(false);
-    expect(snapshot.replyDisabledReason).toMatch(/^Recharge in /);
-  });
-
-  it("formats countdown for hours and minutes", () => {
-    expect(formatCountdown(0)).toBe("0m");
-    expect(formatCountdown(45 * 60_000)).toBe("45m");
-    expect(formatCountdown(2 * 60 * 60_000 + 14 * 60_000)).toBe("2h 14m");
+    expect(snapshot.canReply).toBe(true);
+    expect(snapshot.replyDisabledReason).toBeNull();
   });
 
   it("shifts bar color as ratio increases", () => {
@@ -90,11 +81,5 @@ describe("activity tracker", () => {
     expect(getBarColor(0.7)).toBe("#f59e0b");
     expect(getBarColor(0.9)).toBe("#f43f5e");
     expect(getBarColor(1)).toBe("#d97706");
-  });
-
-  it("computes window end from batch start", () => {
-    const start = 1_000_000;
-    expect(getWindowEndsAt({ ...base, batchWindowStart: start })).toBe(start + LIMITS.batchWindowMs);
-    expect(getWindowEndsAt(base)).toBeNull();
   });
 });

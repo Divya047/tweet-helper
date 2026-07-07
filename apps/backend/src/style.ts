@@ -2,6 +2,8 @@ import type { ContentKind } from "@tweet-helper/shared";
 import type { AppDatabase, WritingExample } from "./db.js";
 import { getSimilarExamples, getWritingExamples, saveStyleProfile } from "./db.js";
 
+export const RECENT_ARCHIVE_EXAMPLE_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
 export interface StyleProfile {
   sampleCount: number;
   postCount: number;
@@ -59,11 +61,19 @@ export function buildStyleProfile(examples: WritingExample[]): StyleProfile {
 }
 
 export function selectStyleExamples(db: AppDatabase, query: string, kind: ContentKind, limit = 8): WritingExample[] {
-  const similar = getSimilarExamples(db, query, kind, limit);
+  const cutoff = new Date(Date.now() - RECENT_ARCHIVE_EXAMPLE_WINDOW_MS).toISOString();
+  const similar = getSimilarExamples(db, query, kind, limit, { excludeXArchiveCreatedAtSince: cutoff });
   if (similar.length > 0) {
     return similar;
   }
-  return getWritingExamples(db, limit).filter((example) => example.kind === kind || example.kind !== "post").slice(0, limit);
+  return getWritingExamples(db, limit * 3)
+    .filter((example) => example.kind === kind || example.kind !== "post")
+    .filter((example) => !isRecentXArchiveExample(example, cutoff))
+    .slice(0, limit);
+}
+
+function isRecentXArchiveExample(example: WritingExample, cutoff: string): boolean {
+  return example.source === "x-archive" && example.createdAt >= cutoff;
 }
 
 function deriveGuidance(profile: StyleProfile): string[] {

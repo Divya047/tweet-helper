@@ -1,9 +1,6 @@
 export const LIMITS = {
   dailyPosts: 8,
-  dailyReplies: 24,
-  batchPosts: 2,
-  batchReplies: 6,
-  batchWindowMs: 3 * 60 * 60 * 1000
+  dailyReplies: 24
 } as const;
 
 const STORAGE_KEY = "tweet-helper-activity";
@@ -20,14 +17,11 @@ export interface ActivityState {
 export interface ActivitySnapshot {
   dailyPosts: number;
   dailyReplies: number;
-  batchPosts: number;
-  batchReplies: number;
   limits: typeof LIMITS;
   canPost: boolean;
   canReply: boolean;
   postDisabledReason: string | null;
   replyDisabledReason: string | null;
-  windowEndsAt: number | null;
   postsDailyComplete: boolean;
   repliesDailyComplete: boolean;
 }
@@ -63,74 +57,40 @@ export function normalizeState(state: ActivityState, now = Date.now()): Activity
     };
   }
 
-  if (next.batchWindowStart !== null && now - next.batchWindowStart >= LIMITS.batchWindowMs) {
-    next = {
-      ...next,
-      batchWindowStart: null,
-      batchPosts: 0,
-      batchReplies: 0
-    };
-  }
-
-  return next;
-}
-
-export function getWindowEndsAt(state: ActivityState): number | null {
-  if (state.batchWindowStart === null) {
-    return null;
-  }
-  return state.batchWindowStart + LIMITS.batchWindowMs;
+  return {
+    ...next,
+    batchWindowStart: null,
+    batchPosts: 0,
+    batchReplies: 0
+  };
 }
 
 export function buildSnapshot(state: ActivityState, now = Date.now()): ActivitySnapshot {
   const normalized = normalizeState(state, now);
-  const windowEndsAt = getWindowEndsAt(normalized);
   const postsDailyComplete = normalized.dailyPosts >= LIMITS.dailyPosts;
   const repliesDailyComplete = normalized.dailyReplies >= LIMITS.dailyReplies;
-  const batchPostsFull = normalized.batchPosts >= LIMITS.batchPosts;
-  const batchRepliesFull = normalized.batchReplies >= LIMITS.batchReplies;
 
   let postDisabledReason: string | null = null;
   if (postsDailyComplete) {
     postDisabledReason = "Daily limit reached";
-  } else if (batchPostsFull && windowEndsAt !== null) {
-    postDisabledReason = `Recharge in ${formatCountdown(windowEndsAt - now)}`;
   }
 
   let replyDisabledReason: string | null = null;
   if (repliesDailyComplete) {
     replyDisabledReason = "Daily limit reached";
-  } else if (batchRepliesFull && windowEndsAt !== null) {
-    replyDisabledReason = `Recharge in ${formatCountdown(windowEndsAt - now)}`;
   }
 
   return {
     dailyPosts: normalized.dailyPosts,
     dailyReplies: normalized.dailyReplies,
-    batchPosts: normalized.batchPosts,
-    batchReplies: normalized.batchReplies,
     limits: LIMITS,
     canPost: postDisabledReason === null,
     canReply: replyDisabledReason === null,
     postDisabledReason,
     replyDisabledReason,
-    windowEndsAt,
     postsDailyComplete,
     repliesDailyComplete
   };
-}
-
-export function formatCountdown(ms: number): string {
-  if (ms <= 0) {
-    return "0m";
-  }
-  const totalMinutes = Math.ceil(ms / 60_000);
-  const hours = Math.floor(totalMinutes / 60);
-  const minutes = totalMinutes % 60;
-  if (hours > 0) {
-    return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
-  }
-  return `${minutes}m`;
 }
 
 export function getBarColor(ratio: number): string {
@@ -184,16 +144,10 @@ async function recordAction(kind: "post" | "reply"): Promise<ActivitySnapshot> {
     return snapshot;
   }
 
-  if (state.batchWindowStart === null) {
-    state.batchWindowStart = now;
-  }
-
   if (kind === "post") {
     state.dailyPosts += 1;
-    state.batchPosts += 1;
   } else {
     state.dailyReplies += 1;
-    state.batchReplies += 1;
   }
 
   await saveState(state);

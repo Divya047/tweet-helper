@@ -1,7 +1,6 @@
 import type { ApiEnvelope, DraftResponse, ScoreVisiblePostsResponse, ScoredPost, SourcePost } from "@tweet-helper/shared";
 import {
   type ActivitySnapshot,
-  formatCountdown,
   getActivitySnapshot,
   getBarColor,
   recordPost,
@@ -1002,14 +1001,6 @@ function renderActivitySection(snapshot: ActivitySnapshot): string {
   const postBarColor = getBarColor(postRatio);
   const replyBarColor = getBarColor(replyRatio);
 
-  const showCooldown =
-    snapshot.windowEndsAt !== null &&
-    (!snapshot.canPost || !snapshot.canReply) &&
-    Date.now() < snapshot.windowEndsAt;
-  const cooldownHtml = showCooldown
-    ? `<div class="cooldown-pill" id="activityCooldown">Recharge in ${formatCountdown(snapshot.windowEndsAt! - Date.now())} — pace yourself</div>`
-    : "";
-
   const postGoalBadge = snapshot.postsDailyComplete ? `<span class="goal-badge">Goal reached</span>` : "";
   const replyGoalBadge = snapshot.repliesDailyComplete ? `<span class="goal-badge">Goal reached</span>` : "";
 
@@ -1027,7 +1018,6 @@ function renderActivitySection(snapshot: ActivitySnapshot): string {
           </div>
           <div class="activity-count">${snapshot.dailyPosts} <span>/ ${snapshot.limits.dailyPosts}</span></div>
           <div class="activity-bar"><div class="activity-bar-fill" style="width:${postBarWidth}%;background:${postBarColor}"></div></div>
-          <div class="activity-window">Window ${snapshot.batchPosts}/${snapshot.limits.batchPosts}</div>
         </div>
         <div class="activity-stat${snapshot.repliesDailyComplete ? " goal-reached" : ""}">
           <div class="activity-stat-label">
@@ -1036,7 +1026,6 @@ function renderActivitySection(snapshot: ActivitySnapshot): string {
           </div>
           <div class="activity-count">${snapshot.dailyReplies} <span>/ ${snapshot.limits.dailyReplies}</span></div>
           <div class="activity-bar"><div class="activity-bar-fill" style="width:${replyBarWidth}%;background:${replyBarColor}"></div></div>
-          <div class="activity-window">Window ${snapshot.batchReplies}/${snapshot.limits.batchReplies}</div>
         </div>
       </div>
       <div class="activity-actions">
@@ -1053,7 +1042,6 @@ function renderActivitySection(snapshot: ActivitySnapshot): string {
           title="${escapeHtml(snapshot.replyDisabledReason ?? "Log a reply you published")}"
         >✓ Replied</button>
       </div>
-      ${cooldownHtml}
     </div>
   `;
 }
@@ -1073,7 +1061,6 @@ function stopActivityTimer(): void {
 }
 
 async function refreshActivityView(quiet = false): Promise<void> {
-  const previous = activitySnapshot;
   activitySnapshot = await getActivitySnapshot();
 
   if (!panelRoot) {
@@ -1097,15 +1084,6 @@ async function refreshActivityView(quiet = false): Promise<void> {
     panelRoot.getElementById("recordReply")?.addEventListener("click", () => void handleReplied());
   }
 
-  if (
-    previous &&
-    activitySnapshot.windowEndsAt &&
-    previous.windowEndsAt &&
-    activitySnapshot.windowEndsAt <= Date.now() &&
-    previous.windowEndsAt > Date.now()
-  ) {
-    setStatus("Window reset — you're good to go again.");
-  }
 }
 
 async function handlePosted(): Promise<void> {
@@ -1116,7 +1094,7 @@ async function handlePosted(): Promise<void> {
       ? `Post logged · ${activitySnapshot.dailyPosts}/${activitySnapshot.limits.dailyPosts} today`
       : activitySnapshot.postsDailyComplete
         ? `Daily post goal reached · ${activitySnapshot.dailyPosts}/${activitySnapshot.limits.dailyPosts}`
-        : `Post logged · recharge window active`,
+        : `Post limit reached`,
     results: lastRendered.results
   });
   if (activitySnapshot.dailyPosts > before && activitySnapshot.postsDailyComplete) {
@@ -1132,7 +1110,7 @@ async function handleReplied(): Promise<void> {
       ? `Reply logged · ${activitySnapshot.dailyReplies}/${activitySnapshot.limits.dailyReplies} today`
       : activitySnapshot.repliesDailyComplete
         ? `Daily reply goal reached · ${activitySnapshot.dailyReplies}/${activitySnapshot.limits.dailyReplies}`
-        : `Reply logged · recharge window active`,
+        : `Reply limit reached`,
     results: lastRendered.results
   });
   if (activitySnapshot.dailyReplies > before && activitySnapshot.repliesDailyComplete) {
