@@ -17,7 +17,7 @@ export function buildPostMessages(
   examples: WritingExample[]
 ): ChatMessage[] {
   const mode = request.mode === "cheap" ? "cheap" : "standard";
-  const suggestionCount = mode === "cheap" ? 2 : 3;
+  const suggestionCount = mode === "cheap" ? 2 : 5;
   return [
     {
       role: "system",
@@ -31,7 +31,7 @@ export function buildPostMessages(
         `Do not use the phrase "real flex" unless the user explicitly asks for it.`,
         "Do not copy or closely paraphrase past tweets; use similarPastWriting only as voice and style reference.",
         "Produce multiple distinct options, not minor paraphrases.",
-        "For 3 suggestions: make 2 safe/on-brand and 1 exploratory with a stronger hook, unusual structure, or bolder angle while staying truthful and non-cringe.",
+        "For 5 suggestions: make the first the single strongest recommendation and the next four distinct Explore strategies (specific, contrarian, story-led, and concise/practical).",
         "For 2 suggestions: make 1 safe/on-brand and 1 exploratory with a stronger hook.",
         "Generate options the user can approve manually.",
         mode === "cheap" ? "Be brief. Minimize rationale length." : ""
@@ -46,6 +46,7 @@ export function buildPostMessages(
           goal: request.goal ?? "authentic",
           length: request.length ?? "short",
           instructions: request.instructions ?? "",
+          regenerationSeed: request.regenerationSeed ?? "initial",
           styleProfile: styleProfileJson ? JSON.parse(styleProfileJson) : null,
           similarPastWriting: examples.map(formatExample),
           requiredOutput: `Return ${suggestionCount} suggestions with text, rationale, confidence. Ensure one suggestion is explicitly exploratory/different.`
@@ -60,10 +61,11 @@ export function buildPostMessages(
 export function buildCommentMessages(
   request: GenerateCommentRequest,
   styleProfileJson: string | undefined,
-  examples: WritingExample[]
+  examples: WritingExample[],
+  pairedExamples: Array<{sourceText:string;replyText:string}> = []
 ): ChatMessage[] {
   const mode = request.mode === "cheap" ? "cheap" : "standard";
-  const suggestionCount = mode === "cheap" ? 2 : 3;
+  const suggestionCount = mode === "cheap" ? 2 : 5;
   return [
     {
       role: "system",
@@ -77,7 +79,7 @@ export function buildCommentMessages(
         `Avoid overusing catchphrases from the user's past writing. Do not use the phrase "real flex" unless it appears in the source post or the user's instructions.`,
         "Do not copy or closely paraphrase past tweets; use similarPastWriting only as voice and style reference.",
         "Produce multiple distinct options, not minor paraphrases.",
-        "For 3 reply suggestions: make 2 safe/on-brand and 1 exploratory with a sharper angle while staying respectful and non-spammy.",
+        "For 5 reply suggestions: make the first the single strongest recommendation and the next four distinct Explore strategies (specific, constructive disagreement, personal/preference question, and concise/practical).",
         "For 2 reply suggestions: make 1 safe/on-brand and 1 exploratory with a sharper angle.",
         mode === "cheap" ? "Be brief. Minimize rationale length." : ""
       ].join("\n")
@@ -90,8 +92,10 @@ export function buildCommentMessages(
           sourcePost: request.sourcePost,
           angle: request.angle ?? "",
           instructions: request.instructions ?? "",
+          regenerationSeed: request.regenerationSeed ?? "initial",
           styleProfile: styleProfileJson ? JSON.parse(styleProfileJson) : null,
           similarPastWriting: examples.map(formatExample),
+          learnedSourceReplyPairs: pairedExamples,
           requiredOutput: `Return ${suggestionCount} reply suggestions with text, rationale, confidence. Ensure one suggestion is explicitly exploratory/different.`
         },
         null,
@@ -107,7 +111,7 @@ export function buildRewriteMessages(
   examples: WritingExample[]
 ): ChatMessage[] {
   const mode = request.mode === "cheap" ? "cheap" : "standard";
-  const suggestionCount = mode === "cheap" ? 2 : 3;
+  const suggestionCount = mode === "cheap" ? 2 : 5;
   return [
     {
       role: "system",
@@ -133,6 +137,7 @@ export function buildRewriteMessages(
           kind: request.kind,
           draftText: request.text,
           instructions: request.instructions ?? "",
+          regenerationSeed: request.regenerationSeed ?? "initial",
           styleProfile: styleProfileJson ? JSON.parse(styleProfileJson) : null,
           similarPastWriting: examples.map(formatExample),
           requiredOutput: `Return ${suggestionCount} rewritten options with text, rationale, confidence. Preserve the original meaning and make the options meaningfully different.`
@@ -167,7 +172,7 @@ export function buildScoreMessages(
       content: JSON.stringify(
         {
           task: "score_visible_posts",
-          visiblePosts: request.posts.slice(0, 20),
+          visiblePosts: request.posts.slice(0, 24),
           styleProfile: styleProfileJson ? JSON.parse(styleProfileJson) : null,
           representativePastWriting: examples.map(formatExample).slice(0, 10),
           scoringCriteria: [

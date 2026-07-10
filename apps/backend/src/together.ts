@@ -151,7 +151,7 @@ export const draftResponseSchema = {
     suggestions: {
       type: "array",
       minItems: 1,
-      maxItems: 3,
+      maxItems: 5,
       items: {
         type: "object",
         additionalProperties: false,
