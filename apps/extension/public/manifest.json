@@ -3,12 +3,10 @@
   "name": "Tweet Helper",
   "version": "0.1.0",
   "description": "Local X post, comment, and reaction helper with human-approved drafts.",
-  "permissions": ["storage", "clipboardWrite"],
+  "permissions": ["storage", "sidePanel", "tabs"],
   "host_permissions": ["http://127.0.0.1:4317/*", "http://localhost:4317/*"],
-  "action": {
-    "default_title": "Tweet Helper",
-    "default_popup": "popup.html"
-  },
+  "action": { "default_title": "Open Tweet Helper" },
+  "side_panel": { "default_path": "sidepanel.html" },
   "background": {
     "service_worker": "background.js",
     "type": "module"

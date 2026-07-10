@@ -1,102 +1,12 @@
 import { describe, expect, it } from "vitest";
-import {
-  buildSnapshot,
-  getBarColor,
-  normalizeState,
-  type ActivityState
-} from "../src/activity.js";
-
-describe("activity tracker", () => {
-  const base: ActivityState = {
-    dayKey: "2026-07-07",
-    dailyPosts: 0,
-    dailyReplies: 0,
-    batchPosts: 0,
-    batchReplies: 0,
-    batchWindowStart: null
-  };
-
-  it("resets daily counters on a new day", () => {
-    const state: ActivityState = {
-      ...base,
-      dailyPosts: 5,
-      dailyReplies: 10,
-      batchPosts: 2,
-      batchReplies: 4,
-      batchWindowStart: Date.parse("2026-07-07T10:00:00")
-    };
-    const now = Date.parse("2026-07-08T01:00:00");
-    const normalized = normalizeState(state, now);
-    expect(normalized.dayKey).toBe("2026-07-08");
-    expect(normalized.dailyPosts).toBe(0);
-    expect(normalized.dailyReplies).toBe(0);
-    expect(normalized.batchPosts).toBe(0);
-    expect(normalized.batchReplies).toBe(0);
-    expect(normalized.batchWindowStart).toBeNull();
+import { activitySnapshot, normalizeActivity, SOFT_GOALS } from "../src/activity.js";
+describe("soft activity goals", () => {
+  it("uses stable 8/24 goals without disabling work", () => {
+    const result = activitySnapshot({ dayKey: "2026-07-10", posts: 9, replies: 25 }, new Date(2026, 6, 10));
+    expect(result.goals).toEqual(SOFT_GOALS); expect(result.postProgress).toBeGreaterThan(1); expect(result.replyProgress).toBeGreaterThan(1);
+    expect(result).not.toHaveProperty("canPost"); expect(result).not.toHaveProperty("canReply");
   });
-
-  it("clears legacy batch counters during normalization", () => {
-    const windowStart = Date.parse("2026-07-07T10:00:00");
-    const state: ActivityState = {
-      ...base,
-      dailyPosts: 2,
-      batchPosts: 2,
-      batchReplies: 6,
-      batchWindowStart: windowStart
-    };
-    const now = windowStart + 60_000;
-    const normalized = normalizeState(state, now);
-    expect(normalized.dailyPosts).toBe(2);
-    expect(normalized.batchPosts).toBe(0);
-    expect(normalized.batchReplies).toBe(0);
-    expect(normalized.batchWindowStart).toBeNull();
-  });
-
-  it("normalizes malformed persisted values", () => {
-    const normalized = normalizeState({
-      dayKey: "2026-07-07",
-      dailyPosts: Number.NaN,
-      dailyReplies: -2,
-      batchPosts: 1.8,
-      batchReplies: "bad" as never,
-      batchWindowStart: "bad" as never
-    });
-
-    expect(normalized.dailyPosts).toBe(0);
-    expect(normalized.dailyReplies).toBe(0);
-    expect(normalized.batchPosts).toBe(0);
-    expect(normalized.batchReplies).toBe(0);
-    expect(normalized.batchWindowStart).toBeNull();
-  });
-
-  it("disables post button only when the daily cap is reached", () => {
-    const windowStart = Date.now() - 60_000;
-    const atDailyCap = buildSnapshot({ ...base, dailyPosts: 8, batchWindowStart: windowStart }, Date.now());
-    expect(atDailyCap.canPost).toBe(false);
-    expect(atDailyCap.postDisabledReason).toBe("Daily limit reached");
-
-    const atBatchCap = buildSnapshot(
-      { ...base, dailyPosts: 1, batchPosts: 2, batchWindowStart: windowStart },
-      Date.now()
-    );
-    expect(atBatchCap.canPost).toBe(true);
-    expect(atBatchCap.postDisabledReason).toBeNull();
-  });
-
-  it("keeps reply button enabled when legacy batch cap is reached", () => {
-    const windowStart = Date.now() - 60_000;
-    const snapshot = buildSnapshot(
-      { ...base, dailyReplies: 5, batchReplies: 6, batchWindowStart: windowStart },
-      Date.now()
-    );
-    expect(snapshot.canReply).toBe(true);
-    expect(snapshot.replyDisabledReason).toBeNull();
-  });
-
-  it("shifts bar color as ratio increases", () => {
-    expect(getBarColor(0.3)).toBe("#22c55e");
-    expect(getBarColor(0.7)).toBe("#f59e0b");
-    expect(getBarColor(0.9)).toBe("#f43f5e");
-    expect(getBarColor(1)).toBe("#d97706");
+  it("resets using a local calendar date rather than a parsed UTC fixture", () => {
+    expect(normalizeActivity({ dayKey: "2026-07-09", posts: 4, replies: 3 }, new Date(2026, 6, 10, 0, 1))).toEqual({ dayKey: "2026-07-10", posts: 0, replies: 0 });
   });
 });
