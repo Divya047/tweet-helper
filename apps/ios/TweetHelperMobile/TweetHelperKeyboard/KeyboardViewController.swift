@@ -1,291 +1,98 @@
 import UIKit
 
 final class KeyboardViewController: UIInputViewController {
-    private enum Mode: String, CaseIterable {
-        case post = "Post"
-        case reply = "Reply"
-        case rewrite = "Rewrite"
-    }
-
-    private let rootStack = UIStackView()
-    private let modeControl = UISegmentedControl(items: Mode.allCases.map(\.rawValue))
-    private let inputTextView = UITextView()
-    private let secondaryTextView = UITextView()
-    private let actionButton = UIButton(type: .system)
-    private let nextKeyboardButton = UIButton(type: .system)
+    private let stack = UIStackView()
+    private let insertButton = UIButton(type: .system)
+    private let rewriteButton = UIButton(type: .system)
+    private let undoButton = UIButton(type: .system)
+    private let globeButton = UIButton(type: .system)
     private let statusLabel = UILabel()
-    private let suggestionsStack = UIStackView()
-    private let confirmStack = UIStackView()
-
-    private var mode: Mode = .post {
-        didSet {
-            configureForMode()
-        }
-    }
-    private var suggestions: [DraftSuggestion] = [] {
-        didSet {
-            renderSuggestions()
-        }
-    }
-    private var pendingRewrite: DraftSuggestion? {
-        didSet {
-            renderConfirmation()
-        }
-    }
-    private var isLoading = false {
-        didSet {
-            actionButton.isEnabled = !isLoading
-            actionButton.setTitle(isLoading ? "Working..." : actionTitle(), for: .normal)
-        }
-    }
+    private var undoSnapshot: RewriteSnapshot?
+    private var busy = false { didSet { updateButtons() } }
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        setupView()
-        configureForMode()
-    }
-
-    private func setupView() {
         view.backgroundColor = .systemBackground
-
-        rootStack.axis = .vertical
-        rootStack.spacing = 8
-        rootStack.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(rootStack)
+        stack.axis = .vertical; stack.spacing = 10; stack.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(stack)
         NSLayoutConstraint.activate([
-            rootStack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 8),
-            rootStack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -8),
-            rootStack.topAnchor.constraint(equalTo: view.topAnchor, constant: 8),
-            rootStack.bottomAnchor.constraint(lessThanOrEqualTo: view.bottomAnchor, constant: -8)
+            stack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 10),
+            stack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -10),
+            stack.topAnchor.constraint(equalTo: view.topAnchor, constant: 10),
+            stack.bottomAnchor.constraint(lessThanOrEqualTo: view.bottomAnchor, constant: -10)
         ])
-
-        modeControl.selectedSegmentIndex = 0
-        modeControl.addTarget(self, action: #selector(modeChanged), for: .valueChanged)
-        rootStack.addArrangedSubview(modeControl)
-
-        inputTextView.font = .preferredFont(forTextStyle: .body)
-        inputTextView.layer.borderWidth = 1
-        inputTextView.layer.borderColor = UIColor.separator.cgColor
-        inputTextView.layer.cornerRadius = 8
-        inputTextView.heightAnchor.constraint(equalToConstant: 58).isActive = true
-        rootStack.addArrangedSubview(inputTextView)
-
-        secondaryTextView.font = .preferredFont(forTextStyle: .footnote)
-        secondaryTextView.layer.borderWidth = 1
-        secondaryTextView.layer.borderColor = UIColor.separator.cgColor
-        secondaryTextView.layer.cornerRadius = 8
-        secondaryTextView.heightAnchor.constraint(equalToConstant: 42).isActive = true
-        rootStack.addArrangedSubview(secondaryTextView)
-
-        let controls = UIStackView()
-        controls.axis = .horizontal
-        controls.spacing = 8
-        controls.distribution = .fillEqually
-
-        nextKeyboardButton.setTitle("Globe", for: .normal)
-        nextKeyboardButton.addTarget(self, action: #selector(nextKeyboardTapped), for: .touchUpInside)
-        nextKeyboardButton.backgroundColor = .secondarySystemBackground
-        nextKeyboardButton.layer.cornerRadius = 8
-        controls.addArrangedSubview(nextKeyboardButton)
-
-        actionButton.addTarget(self, action: #selector(generateTapped), for: .touchUpInside)
-        actionButton.backgroundColor = .systemBlue
-        actionButton.tintColor = .white
-        actionButton.layer.cornerRadius = 8
-        controls.addArrangedSubview(actionButton)
-        rootStack.addArrangedSubview(controls)
-
-        statusLabel.font = .preferredFont(forTextStyle: .caption1)
-        statusLabel.textColor = .secondaryLabel
-        statusLabel.numberOfLines = 2
-        rootStack.addArrangedSubview(statusLabel)
-
-        confirmStack.axis = .horizontal
-        confirmStack.spacing = 8
-        confirmStack.distribution = .fillEqually
-        rootStack.addArrangedSubview(confirmStack)
-
-        suggestionsStack.axis = .vertical
-        suggestionsStack.spacing = 6
-        rootStack.addArrangedSubview(suggestionsStack)
+        configure(insertButton, title: "Insert saved draft", symbol: "tray.and.arrow.up.fill", action: #selector(insertSaved))
+        configure(rewriteButton, title: "Rewrite current", symbol: "sparkles", action: #selector(rewriteCurrent))
+        let row = UIStackView(arrangedSubviews: [undoButton, globeButton]); row.axis = .horizontal; row.spacing = 10; row.distribution = .fillEqually
+        configure(undoButton, title: "Undo", symbol: "arrow.uturn.backward", action: #selector(undoRewrite))
+        configure(globeButton, title: "Globe", symbol: "globe", action: #selector(nextKeyboard))
+        stack.addArrangedSubview(insertButton); stack.addArrangedSubview(rewriteButton); stack.addArrangedSubview(row)
+        statusLabel.font = .preferredFont(forTextStyle: .caption1); statusLabel.textColor = .secondaryLabel
+        statusLabel.numberOfLines = 2; statusLabel.text = "Save drafts in the app or Share Extension. Tweet Helper never submits."
+        stack.addArrangedSubview(statusLabel)
+        updateButtons()
     }
 
-    private func configureForMode() {
-        pendingRewrite = nil
-        suggestions = []
-        inputTextView.text = ""
-        secondaryTextView.text = ""
-        secondaryTextView.isHidden = mode == .rewrite
-        switch mode {
-        case .post:
-            inputTextView.accessibilityLabel = "Post topic or instructions"
-            secondaryTextView.accessibilityLabel = "Optional post instructions"
-            statusLabel.text = "Describe the post you want. Tap a suggestion to insert it."
-        case .reply:
-            inputTextView.accessibilityLabel = "Manually supplied source context"
-            secondaryTextView.accessibilityLabel = "Reply angle"
-            statusLabel.text = "Paste or type source context. Tweet Helper cannot read the X post for you."
-        case .rewrite:
-            inputTextView.accessibilityLabel = "Rewrite instructions"
-            statusLabel.text = "Uses only text available before the cursor in the active composer."
+    private func configure(_ button: UIButton, title: String, symbol: String, action: Selector) {
+        var config = UIButton.Configuration.filled(); config.title = title; config.image = UIImage(systemName: symbol)
+        config.imagePadding = 8; config.cornerStyle = .large; config.baseBackgroundColor = .secondarySystemBackground
+        config.baseForegroundColor = .label; button.configuration = config
+        button.heightAnchor.constraint(greaterThanOrEqualToConstant: 52).isActive = true
+        button.addTarget(self, action: action, for: .touchUpInside)
+    }
+
+    private func updateButtons() {
+        insertButton.isEnabled = !busy
+        rewriteButton.isEnabled = !busy
+        undoButton.isEnabled = !busy && undoSnapshot != nil
+    }
+
+    @objc private func insertSaved() {
+        guard let draft = SharedDraftStore.load().first else {
+            statusLabel.text = "No saved draft. Create one in the Tweet Helper app or Share Extension."
+            return
         }
-        actionButton.setTitle(actionTitle(), for: .normal)
-    }
-
-    private func actionTitle() -> String {
-        switch mode {
-        case .post:
-            return "Draft Post"
-        case .reply:
-            return "Draft Reply"
-        case .rewrite:
-            return "Rewrite"
+        textDocumentProxy.insertText(draft.text)
+        statusLabel.text = "Inserted. Recording usage…"
+        let eventID = UUID()
+        Task {
+            do { try await TweetHelperAPI.recordUsed(draft, clientEventID: eventID); setStatus("Inserted and recorded as used.") }
+            catch { setStatus("Inserted. Usage could not sync; \(readableNetworkError(error))") }
         }
     }
 
-    @objc private func modeChanged() {
-        let index = modeControl.selectedSegmentIndex
-        mode = Mode.allCases[max(0, index)]
-    }
-
-    @objc private func nextKeyboardTapped() {
-        advanceToNextInputMode()
-    }
-
-    @objc private func generateTapped() {
-        pendingRewrite = nil
-        suggestions = []
-        statusLabel.text = "Loading..."
-        isLoading = true
-
+    @objc private func rewriteCurrent() {
+        let before = textDocumentProxy.documentContextBeforeInput ?? ""
+        guard let input = before.nilIfBlank else { statusLabel.text = "Type a draft in X first."; return }
+        busy = true; statusLabel.text = "Rewriting…"
         Task {
             do {
-                let results: [DraftSuggestion]
-                switch mode {
-                case .post:
-                    let topic = inputTextView.text.trimmingCharacters(in: .whitespacesAndNewlines)
-                    guard !topic.isEmpty else {
-                        throw KeyboardError.emptyInput("Enter a topic or rough draft.")
-                    }
-                    results = try await TweetHelperAPI.generatePost(topic: topic, instructions: secondaryTextView.text)
-                case .reply:
-                    let context = inputTextView.text.trimmingCharacters(in: .whitespacesAndNewlines)
-                    guard !context.isEmpty else {
-                        throw KeyboardError.emptyInput("Enter source context manually.")
-                    }
-                    results = try await TweetHelperAPI.generateReply(context: context, angle: secondaryTextView.text)
-                case .rewrite:
-                    let draft = textDocumentProxy.documentContextBeforeInput?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                    guard !draft.isEmpty else {
-                        throw KeyboardError.emptyInput("Type a draft in the composer first.")
-                    }
-                    results = try await TweetHelperAPI.rewrite(text: draft, kind: "post", instructions: inputTextView.text)
+                guard let suggestion = try await TweetHelperAPI.rewrite(text: input).first else {
+                    finishBusy("No rewrite was returned."); return
                 }
-
                 await MainActor.run {
-                    suggestions = results
-                    statusLabel.text = results.isEmpty ? "No suggestions returned." : "Tap a suggestion to insert."
-                    isLoading = false
+                    let snapshot = RewriteSnapshot(before: before, after: suggestion.text)
+                    RewriteUndoHelper.replace(before: before, with: suggestion.text,
+                                              deleteBackward: { self.textDocumentProxy.deleteBackward() },
+                                              insert: { self.textDocumentProxy.insertText($0) })
+                    self.undoSnapshot = snapshot; self.busy = false; self.statusLabel.text = "Rewritten. Tap Undo to restore the previous text."
                 }
-            } catch {
-                await MainActor.run {
-                    statusLabel.text = error.localizedDescription
-                    isLoading = false
-                }
-            }
+            } catch { finishBusy(readableNetworkError(error)) }
         }
     }
 
-    private func renderSuggestions() {
-        suggestionsStack.arrangedSubviews.forEach { view in
-            suggestionsStack.removeArrangedSubview(view)
-            view.removeFromSuperview()
-        }
-
-        for suggestion in suggestions {
-            var configuration = UIButton.Configuration.filled()
-            configuration.baseBackgroundColor = .secondarySystemBackground
-            configuration.baseForegroundColor = .label
-            configuration.cornerStyle = .medium
-            configuration.title = suggestion.text
-            configuration.subtitle = suggestion.rationale
-            configuration.titleAlignment = .leading
-            configuration.contentInsets = NSDirectionalEdgeInsets(top: 8, leading: 10, bottom: 8, trailing: 10)
-
-            let button = UIButton(configuration: configuration)
-            button.contentHorizontalAlignment = .leading
-            button.addAction(
-                UIAction { [weak self] _ in
-                    self?.handleSuggestion(suggestion)
-                },
-                for: .touchUpInside
-            )
-            suggestionsStack.addArrangedSubview(button)
-        }
-    }
-
-    private func handleSuggestion(_ suggestion: DraftSuggestion) {
-        if mode == .rewrite {
-            pendingRewrite = suggestion
-            statusLabel.text = "Choose whether to replace the available composer draft or insert after it."
-            return
-        }
-        textDocumentProxy.insertText(suggestion.text)
-        statusLabel.text = "Inserted."
-    }
-
-    private func renderConfirmation() {
-        confirmStack.arrangedSubviews.forEach { view in
-            confirmStack.removeArrangedSubview(view)
-            view.removeFromSuperview()
-        }
-        guard let suggestion = pendingRewrite else {
-            confirmStack.isHidden = true
-            return
-        }
-
-        confirmStack.isHidden = false
-        let replace = UIButton(type: .system)
-        replace.setTitle("Replace Draft", for: .normal)
-        replace.backgroundColor = .systemRed
-        replace.tintColor = .white
-        replace.layer.cornerRadius = 8
-        replace.addAction(UIAction { [weak self] _ in
-            self?.replaceAvailableDraft(with: suggestion.text)
-        }, for: .touchUpInside)
-
-        let insert = UIButton(type: .system)
-        insert.setTitle("Insert After", for: .normal)
-        insert.backgroundColor = .secondarySystemBackground
-        insert.layer.cornerRadius = 8
-        insert.addAction(UIAction { [weak self] _ in
-            self?.textDocumentProxy.insertText(suggestion.text)
-            self?.pendingRewrite = nil
-            self?.statusLabel.text = "Inserted."
-        }, for: .touchUpInside)
-
-        confirmStack.addArrangedSubview(replace)
-        confirmStack.addArrangedSubview(insert)
-    }
-
-    private func replaceAvailableDraft(with text: String) {
+    @objc private func undoRewrite() {
+        guard let snapshot = undoSnapshot else { return }
         let current = textDocumentProxy.documentContextBeforeInput ?? ""
-        for _ in current {
-            textDocumentProxy.deleteBackward()
-        }
-        textDocumentProxy.insertText(text)
-        pendingRewrite = nil
-        statusLabel.text = "Replaced available draft."
+        if RewriteUndoHelper.undo(snapshot, currentBeforeCursor: current,
+                                  deleteBackward: { textDocumentProxy.deleteBackward() },
+                                  insert: { textDocumentProxy.insertText($0) }) {
+            undoSnapshot = nil; statusLabel.text = "Rewrite undone."
+        } else { statusLabel.text = "Undo is unavailable because the composer changed." }
+        updateButtons()
     }
-}
 
-private enum KeyboardError: LocalizedError {
-    case emptyInput(String)
-
-    var errorDescription: String? {
-        switch self {
-        case .emptyInput(let message):
-            return message
-        }
-    }
+    @objc private func nextKeyboard() { advanceToNextInputMode() }
+    @MainActor private func setStatus(_ text: String) { statusLabel.text = text }
+    @MainActor private func finishBusy(_ text: String) { statusLabel.text = text; busy = false }
 }
