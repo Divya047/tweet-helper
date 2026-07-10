@@ -1,35 +1,51 @@
-# Tweet Helper Mobile
+# Tweet Helper for iPhone
 
-iPhone-first Tweet Helper containing app plus custom keyboard extension.
+The iOS workspace contains a full-screen SwiftUI composer, a Share Extension, a custom keyboard, and XCTest coverage. Every surface drafts or inserts text only. Nothing submits to X.
 
-## Local Setup
+## Targets
 
-1. Open `TweetHelperMobile.xcodeproj` in Xcode.
-2. Change both bundle identifiers from `com.example.TweetHelperMobile*` to identifiers under your Apple developer team.
-3. Change the App Group in:
-   - `Shared/TweetHelperSettings.swift`
-   - `TweetHelperMobile/TweetHelperMobile.entitlements`
-   - `TweetHelperKeyboard/TweetHelperKeyboard.entitlements`
-4. Enable the same App Group for both targets in Xcode Signing & Capabilities.
-5. Run the containing app on your iPhone.
-6. Enter your backend URL, usually `http://<mac-tailscale-ip>:4317`, plus `MOBILE_AUTH_TOKEN` if configured.
-7. In iOS Settings, add the `Tweet Helper` keyboard and enable Allow Full Access.
+- `TweetHelperMobile`: enter a brief or reply context with the normal iOS keyboard, generate and edit drafts, review the saved queue, and configure the backend.
+- `TweetHelperShare`: share text or a web URL from Chrome, X, or another app; review the recommended reply, explore alternatives, and save one to the App Group. If an app shares no usable content, `Paste Context` reads the clipboard once after a tap.
+- `TweetHelperKeyboard`: large `Insert saved draft`, `Rewrite current`, `Undo`, and `Globe` actions. It has no embedded editor and never submits.
+- `TweetHelperTests`: share parsing, App Group transfer, API decoding, used-outcome payload, and rewrite/undo helper coverage.
 
-## Backend
+## Signing and App Group setup
 
-For iPhone access over Tailscale, run the backend with:
+1. Open `TweetHelperMobile.xcodeproj` in Xcode and select your development team for all four targets.
+2. If the bundle IDs change, use unique IDs for the app, `.Keyboard`, `.Share`, and `.Tests` products.
+3. Enable the same App Group on the app, keyboard, and share targets. The checked-in identifier is `group.com.djdesai.TweetHelperMobile`; update it consistently in all three entitlements files and `Shared/TweetHelperSettings.swift` if needed.
+4. Build the containing app on an iPhone. In its Settings sheet, save the backend URL and optional mobile auth token. Those values are shared through the App Group.
+5. In iOS Settings → General → Keyboard → Keyboards, add Tweet Helper and enable Full Access. iOS requires Full Access for a custom keyboard to call the local backend.
+6. In the system share sheet, choose Tweet Helper. Use “Edit Actions” if it is not initially visible.
+
+## Backend and privacy
+
+For a Mac reachable over a private Tailscale network:
 
 ```bash
 HOST=0.0.0.0 PORT=4317 MOBILE_AUTH_TOKEN=<long-random-token> npm run backend:dev
 ```
 
-Keep the backend on your private Tailscale network. Do not expose it directly to the public internet.
+The app calls health and generation routes. When the keyboard inserts a saved draft it also posts to `/api/outcomes` with `status=used`, `platform=ios`, the final text/source pair, a stable per-insertion `clientEventId`, and any available `sessionId`/`workId`. Insertion succeeds even if that telemetry call is offline, with a visible sync error.
 
-## Keyboard Behavior
+The Share Extension accepts only plain text and `http`/`https` URLs. It processes at most twelve attachments, does not scrape the source app, and offers clipboard access only through the explicit Paste Context fallback.
 
-- `Post` drafts from text typed into the keyboard.
-- `Reply` drafts only from source/context manually entered in the keyboard.
-- `Rewrite` reads `textDocumentProxy.documentContextBeforeInput`, asks for rewrite options, then requires a tap on `Replace Draft` or `Insert After`.
-- The keyboard never posts, replies, likes, reposts, follows, scrapes the screen, or calls the X API.
+## Verification
 
-The keyboard requires Full Access because iOS blocks network calls from custom keyboards unless `RequestsOpenAccess` is enabled and the user allows full access.
+Unsigned device compilation (does not need provisioning):
+
+```bash
+xcodebuild -project TweetHelperMobile.xcodeproj \
+  -scheme TweetHelperMobile \
+  -destination 'generic/platform=iOS' \
+  -derivedDataPath /tmp/TweetHelperDerivedData \
+  CODE_SIGNING_ALLOWED=NO build-for-testing
+```
+
+Run tests on an installed iOS Simulator runtime or a signed device:
+
+```bash
+xcodebuild test -project TweetHelperMobile.xcodeproj \
+  -scheme TweetHelperMobile \
+  -destination 'platform=iOS Simulator,name=iPhone 16'
+```
