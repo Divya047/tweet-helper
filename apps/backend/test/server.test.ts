@@ -107,4 +107,123 @@ describe("backend routes", () => {
     expect(response.json().data.rankedPosts[0].recommendation).toBe("reply");
     await app.close();
   });
+
+  it("keeps protected routes open when mobile auth is not configured", async () => {
+    const db = openDatabase(":memory:");
+    const mockTogether = createMockTogetherClient(() => ({
+      suggestions: [{ text: "A clearer local-first draft.", rationale: "Tighter.", confidence: 0.8 }]
+    }));
+    const { app } = await buildServer({
+      db,
+      config: { dbPath: ":memory:", dailyBudgetUsd: 10, monthlyBudgetUsd: 10 },
+      togetherClient: mockTogether
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/generate/rewrite",
+      payload: { text: "local first tools are good", kind: "post" }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().data.suggestions[0].text).toBe("A clearer local-first draft.");
+    await app.close();
+  });
+
+  it("requires bearer auth for protected routes when mobile auth is configured", async () => {
+    const db = openDatabase(":memory:");
+    const mockTogether = createMockTogetherClient(() => ({
+      suggestions: [{ text: "Authorized draft.", rationale: "Valid.", confidence: 0.8 }]
+    }));
+    const { app } = await buildServer({
+      db,
+      config: { dbPath: ":memory:", dailyBudgetUsd: 10, monthlyBudgetUsd: 10, mobileAuthToken: "secret-token" },
+      togetherClient: mockTogether
+    });
+
+    const missing = await app.inject({
+      method: "POST",
+      url: "/api/generate/post",
+      payload: { topic: "local tools" }
+    });
+    const wrong = await app.inject({
+      method: "GET",
+      url: "/api/settings",
+      headers: { authorization: "Bearer wrong" }
+    });
+    const feedbackMissing = await app.inject({
+      method: "POST",
+      url: "/api/feedback",
+      payload: { suggestionId: "1", kind: "post", decision: "skipped" }
+    });
+    const health = await app.inject({ method: "GET", url: "/health" });
+    const authorized = await app.inject({
+      method: "POST",
+      url: "/api/generate/post",
+      headers: { authorization: "Bearer secret-token" },
+      payload: { topic: "local tools" }
+    });
+
+    expect(missing.statusCode).toBe(401);
+    expect(wrong.statusCode).toBe(401);
+    expect(feedbackMissing.statusCode).toBe(401);
+    expect(health.statusCode).toBe(200);
+    expect(health.json()).toEqual({ ok: true });
+    expect(authorized.statusCode).toBe(200);
+    await app.close();
+  });
+
+  it("rewrites existing drafts through cache and rejects empty text", async () => {
+    const db = openDatabase(":memory:");
+    const requests: JsonCompletionRequest[] = [];
+    const mockTogether = createMockTogetherClient((request) => {
+      requests.push(request);
+      return {
+        suggestions: [
+          { text: "Local tools work best when they are boring and useful.", rationale: "Clearer.", confidence: 0.88 },
+          { text: "The best local tools stay quiet, fast, and useful.", rationale: "More distinct.", confidence: 0.82 }
+        ]
+      };
+    });
+    const { app } = await buildServer({
+      db,
+      config: { dbPath: ":memory:", dailyBudgetUsd: 10, monthlyBudgetUsd: 10 },
+      togetherClient: mockTogether
+    });
+
+    const invalid = await app.inject({
+      method: "POST",
+      url: "/api/generate/rewrite",
+      payload: { text: "   ", kind: "post" }
+    });
+    expect(invalid.statusCode).toBe(500);
+    expect(invalid.json().error.message).toMatch(/text is required/i);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/generate/rewrite",
+      payload: {
+        text: "local tools should be simple and useful",
+        kind: "post",
+        instructions: "Make it sharper."
+      }
+    });
+    const cached = await app.inject({
+      method: "POST",
+      url: "/api/generate/rewrite",
+      payload: {
+        text: "local tools should be simple and useful",
+        kind: "post",
+        instructions: "Make it sharper."
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().data.suggestions).toHaveLength(2);
+    expect(response.json().meta.cached).toBe(false);
+    expect(cached.json().meta.cached).toBe(true);
+    expect(requests).toHaveLength(1);
+    expect(JSON.stringify(requests[0]?.messages)).toContain("Preserve the user's meaning");
+    await app.close();
+  });
 });

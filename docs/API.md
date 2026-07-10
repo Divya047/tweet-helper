@@ -2,6 +2,18 @@
 
 Base URL: `http://127.0.0.1:4317`
 
+`GET /health` returns only:
+
+```json
+{ "ok": true }
+```
+
+If `MOBILE_AUTH_TOKEN` is set, include this header on generation, feedback, and settings endpoints:
+
+```http
+Authorization: Bearer <token>
+```
+
 ## Import X Archive
 
 `POST /api/import/x-archive`
@@ -51,6 +63,54 @@ Alternative inputs:
 }
 ```
 
+For the iPhone keyboard, `sourcePost.text` must be manually supplied context. The backend does not read the X screen or call the X API.
+
+## Generate Rewrite
+
+`POST /api/generate/rewrite`
+
+```json
+{
+  "text": "rough draft already typed in the composer",
+  "kind": "post",
+  "instructions": "Make it clearer and less hypey.",
+  "mode": "standard",
+  "model": "standard"
+}
+```
+
+Fields:
+
+- `text`: required non-empty draft text.
+- `kind`: `post` or `comment`.
+- `instructions`: optional rewrite guidance.
+- `mode`: optional `standard` or `cheap`.
+- `model`: optional `standard` or `advanced`.
+
+Response uses the same draft envelope as post/comment generation:
+
+```json
+{
+  "data": {
+    "suggestions": [
+      {
+        "id": "uuid",
+        "text": "Rewritten draft",
+        "rationale": "Why this works",
+        "confidence": 0.84
+      }
+    ]
+  },
+  "meta": {
+    "cached": false,
+    "model": "MiniMaxAI/MiniMax-M3",
+    "estimatedCostUsd": 0,
+    "inputTokens": 100,
+    "outputTokens": 80
+  }
+}
+```
+
 ## Score Visible Posts
 
 `POST /api/score/visible-posts`
@@ -88,3 +148,11 @@ Recommendations are limited to `reply`, `quote idea`, `save for later`, or `skip
 ```
 
 Accepted and edited `finalText` can be added back into local examples for future personalization.
+
+## Settings
+
+`GET /api/settings`
+
+`PUT /api/settings`
+
+These routes are protected by `MOBILE_AUTH_TOKEN` when configured.

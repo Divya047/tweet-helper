@@ -36,6 +36,14 @@ export interface GenerateCommentRequest {
   model?: "standard" | "advanced";
 }
 
+export interface GenerateRewriteRequest {
+  text: string;
+  kind: "post" | "comment";
+  instructions?: string;
+  mode?: "standard" | "cheap";
+  model?: "standard" | "advanced";
+}
+
 export interface VisiblePost extends SourcePost {
   viewportIndex?: number;
 }
@@ -162,6 +170,37 @@ export function validateScoreVisiblePostsResponse(value: unknown): ScoreVisibleP
   });
 
   return { rankedPosts };
+}
+
+export function validateGenerateRewriteRequest(value: unknown): GenerateRewriteRequest {
+  if (!isObject(value)) {
+    throw new Error("Rewrite request body must be an object.");
+  }
+
+  const rawText = value.text;
+  if (typeof rawText !== "string" || !rawText.trim()) {
+    throw new Error("text is required.");
+  }
+  const text = rawText.trim();
+  const kind = value.kind;
+  if (kind !== "post" && kind !== "comment") {
+    throw new Error("kind must be post or comment.");
+  }
+
+  const result: GenerateRewriteRequest = {
+    text,
+    kind
+  };
+  if (typeof value.instructions === "string" && value.instructions.trim()) {
+    result.instructions = value.instructions.trim();
+  }
+  if (value.mode === "cheap" || value.mode === "standard") {
+    result.mode = value.mode;
+  }
+  if (value.model === "standard" || value.model === "advanced") {
+    result.model = value.model;
+  }
+  return result;
 }
 
 export function parseJsonObject(value: string): unknown {

@@ -15,9 +15,9 @@ checkButton.addEventListener("click", () => {
   status.textContent = "Checking...";
   setBusy(true);
   void saveBackendUrl({ quiet: true })
-    .then(() => getJson<{ ok: boolean; model: string }>("/health"))
+    .then(() => getJson<{ ok: boolean }>("/health"))
     .then((result) => {
-      status.textContent = result.ok ? `Connected. Model: ${result.model}` : "Backend did not report healthy.";
+      status.textContent = result.ok ? "Connected." : "Backend did not report healthy.";
     })
     .catch((error: unknown) => {
       status.textContent =

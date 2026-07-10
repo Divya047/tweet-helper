@@ -5,6 +5,8 @@ dist-types/
 coverage/
 .vite/
 *.tsbuildinfo
+DerivedData/
+apps/ios/**/DerivedData/
 
 # Local config and secrets
 .env

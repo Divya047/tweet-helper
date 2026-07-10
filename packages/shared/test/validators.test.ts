@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { validateDraftResponse, validateScoreVisiblePostsResponse } from "../src/index.js";
+import { validateDraftResponse, validateGenerateRewriteRequest, validateScoreVisiblePostsResponse } from "../src/index.js";
 
 describe("shared validators", () => {
   it("accepts a valid draft response", () => {
@@ -26,5 +26,26 @@ describe("shared validators", () => {
         ]
       })
     ).toThrow(/invalid recommendation/i);
+  });
+
+  it("validates rewrite requests", () => {
+    expect(
+      validateGenerateRewriteRequest({
+        text: "Make this clearer",
+        kind: "post",
+        instructions: "Keep it short.",
+        mode: "cheap",
+        model: "advanced"
+      })
+    ).toEqual({
+      text: "Make this clearer",
+      kind: "post",
+      instructions: "Keep it short.",
+      mode: "cheap",
+      model: "advanced"
+    });
+
+    expect(() => validateGenerateRewriteRequest({ text: "", kind: "post" })).toThrow(/text/i);
+    expect(() => validateGenerateRewriteRequest({ text: "Draft", kind: "quote" })).toThrow(/kind must be post or comment/i);
   });
 });

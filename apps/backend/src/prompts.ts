@@ -1,4 +1,9 @@
-import type { GenerateCommentRequest, GeneratePostRequest, ScoreVisiblePostsRequest } from "@tweet-helper/shared";
+import type {
+  GenerateCommentRequest,
+  GeneratePostRequest,
+  GenerateRewriteRequest,
+  ScoreVisiblePostsRequest
+} from "@tweet-helper/shared";
 import type { WritingExample } from "./db.js";
 
 export interface ChatMessage {
@@ -88,6 +93,49 @@ export function buildCommentMessages(
           styleProfile: styleProfileJson ? JSON.parse(styleProfileJson) : null,
           similarPastWriting: examples.map(formatExample),
           requiredOutput: `Return ${suggestionCount} reply suggestions with text, rationale, confidence. Ensure one suggestion is explicitly exploratory/different.`
+        },
+        null,
+        2
+      )
+    }
+  ];
+}
+
+export function buildRewriteMessages(
+  request: GenerateRewriteRequest,
+  styleProfileJson: string | undefined,
+  examples: WritingExample[]
+): ChatMessage[] {
+  const mode = request.mode === "cheap" ? "cheap" : "standard";
+  const suggestionCount = mode === "cheap" ? 2 : 3;
+  return [
+    {
+      role: "system",
+      content: [
+        "You rewrite X drafts for the user in their authentic voice.",
+        "Return only valid JSON matching the schema.",
+        "Preserve the user's meaning and do not invent facts, links, metrics, credentials, or personal experiences.",
+        "Improve clarity, rhythm, tone, and specificity without making the draft sound automated.",
+        "Keep the result suitable for the requested kind: post or comment.",
+        "Do not imply the helper saw any original X post unless the user included that context in the draft or instructions.",
+        "Avoid engagement bait, spam, hashtags unless asked, and generic influencer phrasing.",
+        "Do not copy or closely paraphrase past tweets; use similarPastWriting only as voice and style reference.",
+        "Produce multiple distinct options, not minor paraphrases.",
+        "Generate options the user can approve manually. Never claim to post, reply, like, repost, or perform actions.",
+        mode === "cheap" ? "Be brief. Minimize rationale length." : ""
+      ].join("\n")
+    },
+    {
+      role: "user",
+      content: JSON.stringify(
+        {
+          task: "rewrite_draft",
+          kind: request.kind,
+          draftText: request.text,
+          instructions: request.instructions ?? "",
+          styleProfile: styleProfileJson ? JSON.parse(styleProfileJson) : null,
+          similarPastWriting: examples.map(formatExample),
+          requiredOutput: `Return ${suggestionCount} rewritten options with text, rationale, confidence. Preserve the original meaning and make the options meaningfully different.`
         },
         null,
         2

@@ -5,12 +5,14 @@ import {
   ADVANCED_MODEL,
   DEFAULT_MODEL,
   estimateTokens,
+  validateGenerateRewriteRequest,
   validateDraftResponse,
   validateScoreVisiblePostsResponse,
   type DraftResponse,
   type FeedbackRequest,
   type GenerateCommentRequest,
   type GeneratePostRequest,
+  type GenerateRewriteRequest,
   type ScoreVisiblePostsRequest
 } from "@tweet-helper/shared";
 import { parseTweetsJs, parseXArchiveZip } from "./archive.js";
@@ -33,7 +35,13 @@ import {
   type WritingExample,
   type WritingExampleInput
 } from "./db.js";
-import { buildCommentMessages, buildPostMessages, buildScoreMessages, type ChatMessage } from "./prompts.js";
+import {
+  buildCommentMessages,
+  buildPostMessages,
+  buildRewriteMessages,
+  buildScoreMessages,
+  type ChatMessage
+} from "./prompts.js";
 import { RECENT_ARCHIVE_EXAMPLE_WINDOW_MS, rebuildStyleProfile, selectStyleExamples } from "./style.js";
 import {
   cacheKeyFor,
@@ -76,6 +84,20 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Bui
     methods: ["GET", "POST", "PUT", "OPTIONS"]
   });
 
+  app.addHook("onRequest", async (request, reply) => {
+    if (!config.mobileAuthToken || request.method === "OPTIONS" || !isProtectedApiPath(request.url)) {
+      return;
+    }
+    if (request.headers.authorization !== `Bearer ${config.mobileAuthToken}`) {
+      return reply.status(401).send({
+        error: {
+          message: "Missing or invalid bearer token.",
+          statusCode: 401
+        }
+      });
+    }
+  });
+
   app.setErrorHandler((error: Error & { statusCode?: number }, _request, reply) => {
     const statusCode = /budget/i.test(error.message) ? 402 : error.statusCode ?? 500;
     reply.status(statusCode).send({
@@ -87,9 +109,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Bui
   });
 
   app.get("/health", async () => ({
-    ok: true,
-    model: togetherClient.defaultModel,
-    settings: getSettings(db)
+    ok: true
   }));
 
   app.get("/api/settings", async () => ({ data: getSettings(db) }));
@@ -175,6 +195,38 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Bui
         schema: draftResponseSchema,
         maxTokens: mode === "cheap" ? 340 : 650,
         temperature: mode === "cheap" ? 0.6 : 0.75,
+        ...(requestedModel ? { model: requestedModel } : {})
+      },
+      validate: (value) => removeRecentArchiveCopies(validateDraftResponse(value), recentArchiveExamples)
+    });
+    return response;
+  });
+
+  app.post<{ Body: GenerateRewriteRequest }>("/api/generate/rewrite", async (request) => {
+    const body = validateGenerateRewriteRequest(request.body);
+    const mode = body.mode === "cheap" ? "cheap" : "standard";
+    const requestedModel = body.model === "advanced" ? ADVANCED_MODEL : undefined;
+    const styleProfile = getStyleProfile(db);
+    const examples = selectStyleExamples(db, `${body.text} ${body.instructions ?? ""}`, body.kind);
+    const recentArchiveExamples = getRecentXArchiveExamples(db, recentArchiveCutoff());
+    const messages = buildRewriteMessages(body, styleProfile, examples);
+    const response = await runCachedJsonGeneration({
+      db,
+      togetherClient,
+      endpoint: "generate_rewrite",
+      cacheInput: {
+        body,
+        styleProfile,
+        examples: examples.map((example) => example.id),
+        blockedExamples: recentArchiveExamples.map((example) => example.id),
+        model: requestedModel ?? "default"
+      },
+      request: {
+        messages,
+        schemaName: "DraftResponse",
+        schema: draftResponseSchema,
+        maxTokens: mode === "cheap" ? 340 : 650,
+        temperature: mode === "cheap" ? 0.55 : 0.7,
         ...(requestedModel ? { model: requestedModel } : {})
       },
       validate: (value) => removeRecentArchiveCopies(validateDraftResponse(value), recentArchiveExamples)
@@ -279,6 +331,11 @@ function importArchiveInput(body: ImportArchiveBody): ImportArchiveParsed {
     return parseXArchiveZip(new Uint8Array(buffer));
   }
   throw new Error("Provide archivePath, archiveBase64, or tweetsJsText.");
+}
+
+function isProtectedApiPath(url: string): boolean {
+  const path = url.split("?")[0] ?? url;
+  return path.startsWith("/api/generate/") || path === "/api/feedback" || path === "/api/settings";
 }
 
 function recentArchiveCutoff(): string {
