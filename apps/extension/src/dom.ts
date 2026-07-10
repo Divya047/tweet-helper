@@ -1,4 +1,5 @@
-import type { SourcePost, VisiblePost } from "@tweet-helper/shared";
+import type { VisiblePost } from "@tweet-helper/shared";
+import type { ComposerContext, PostContext } from "./contracts.js";
 
 const TWEET_TEXT_SELECTOR = '[data-testid="tweetText"]';
 const TWEET_ARTICLE_SELECTOR = 'article[data-testid="tweet"], article';
@@ -115,7 +116,7 @@ function dispatchPaste(composer: HTMLElement, text: string): boolean {
   return !wasNotCanceled || after !== before;
 }
 
-export function getNearestSourcePost(composer: HTMLElement): SourcePost | undefined {
+export function getNearestSourcePost(composer: HTMLElement): PostContext | undefined {
   const article = composer.closest<HTMLElement>(TWEET_ARTICLE_SELECTOR);
   if (article) {
     return sourcePostFromContainer(article, getTweetTextNodes(article)[0]);
@@ -134,7 +135,7 @@ export function getNearestSourcePost(composer: HTMLElement): SourcePost | undefi
   return sourcePostFromContainer(dialog, sourceTextNode);
 }
 
-function sourcePostFromContainer(container: HTMLElement, textNode?: HTMLElement): SourcePost | undefined {
+function sourcePostFromContainer(container: HTMLElement, textNode?: HTMLElement): PostContext | undefined {
   const text = textNode ? normalizeElementText(textNode) : extractPostText(container);
   if (!text) {
     return undefined;
@@ -148,6 +149,28 @@ function sourcePostFromContainer(container: HTMLElement, textNode?: HTMLElement)
     ...(author ? { author } : {}),
     ...(url ? { url } : {})
   };
+}
+
+export function getComposerContext(composer: HTMLElement): ComposerContext {
+  const dialog = composer.closest<HTMLElement>(DIALOG_SELECTOR);
+  const article = composer.closest<HTMLElement>(TWEET_ARTICLE_SELECTOR);
+  const container = dialog ?? article;
+  const nodes = container ? getTweetTextNodes(container).filter((node) => !composer.contains(node)) : [];
+  const posts = nodes.map((node) => sourcePostFromContainer(container!, node)).filter((post): post is PostContext => !!post);
+  const target = posts.at(-1);
+  const parent = posts.length > 1 ? posts.at(-2) : undefined;
+  const quoted = article && nodes.length > 1 ? posts[1] : undefined;
+  return {
+    kind: target ? "reply" : "post",
+    currentText: getComposerText(composer),
+    ...(target ? { target } : {}),
+    ...(parent && parent.id !== target?.id ? { parent } : {}),
+    ...(quoted && quoted.id !== target?.id ? { quoted } : {})
+  };
+}
+
+export function isEmptyNewPost(composer: HTMLElement): boolean {
+  return getComposerContext(composer).kind === "post" && !getComposerText(composer);
 }
 
 function findSourceTweetText(container: HTMLElement, composer: HTMLElement): HTMLElement | undefined {
