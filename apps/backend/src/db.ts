@@ -1,7 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import type { ContentKind, FeedbackDecision } from "@tweet-helper/shared";
+import type { ContentKind, FeedbackDecision, Outcome, OutcomeKind, SourcePost, WorkItem, WorkItemStatus, WorkSession, WorkSessionStatus } from "@tweet-helper/shared";
 
 export interface WritingExampleInput {
   id: string;
@@ -124,8 +124,154 @@ export function migrate(db: AppDatabase): void {
       context_json TEXT,
       created_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS work_sessions (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('active', 'completed', 'archived')) DEFAULT 'active',
+      soft_goal INTEGER NOT NULL DEFAULT 8 CHECK (soft_goal > 0),
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      archived_at TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS work_items (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL REFERENCES work_sessions(id) ON DELETE CASCADE,
+      position INTEGER NOT NULL,
+      source_post_json TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('pending', 'drafted', 'used', 'published', 'skipped')) DEFAULT 'pending',
+      recommendation TEXT,
+      score REAL,
+      draft_response_json TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(session_id, position)
+    );
+
+    CREATE TABLE IF NOT EXISTS outcomes (
+      id TEXT PRIMARY KEY,
+      work_item_id TEXT NOT NULL REFERENCES work_items(id) ON DELETE CASCADE,
+      kind TEXT NOT NULL CHECK (kind IN ('used', 'published')),
+      idempotency_key TEXT NOT NULL UNIQUE,
+      text TEXT,
+      external_id TEXT,
+      created_at TEXT NOT NULL,
+      UNIQUE(work_item_id, kind)
+    );
+
+    CREATE INDEX IF NOT EXISTS work_sessions_status_updated ON work_sessions(status, updated_at);
+    CREATE INDEX IF NOT EXISTS work_items_session_position ON work_items(session_id, position);
+    CREATE INDEX IF NOT EXISTS outcomes_created_kind ON outcomes(created_at, kind);
   `);
 }
+
+export function createWorkSession(db: AppDatabase, input: { title?: string; softGoal?: number } = {}): WorkSession {
+  const id = crypto.randomUUID();
+  const now = new Date().toISOString();
+  db.prepare(`INSERT INTO work_sessions(id,title,status,soft_goal,created_at,updated_at) VALUES(?,?,'active',?,?,?)`)
+    .run(id, input.title?.trim() || "Tweet work session", Math.max(1, Math.round(input.softGoal ?? 8)), now, now);
+  return getWorkSession(db, id)!;
+}
+
+export function listWorkSessions(db: AppDatabase, includeArchived = false): WorkSession[] {
+  const rows = db.prepare(`SELECT id,title,status,soft_goal as softGoal,created_at as createdAt,updated_at as updatedAt,archived_at as archivedAt FROM work_sessions WHERE (? = 1 OR status != 'archived') ORDER BY updated_at DESC`)
+    .all(includeArchived ? 1 : 0) as unknown as WorkSession[];
+  return rows.map(cleanSession);
+}
+
+export function getWorkSession(db: AppDatabase, id: string): WorkSession | undefined {
+  const row = db.prepare(`SELECT id,title,status,soft_goal as softGoal,created_at as createdAt,updated_at as updatedAt,archived_at as archivedAt FROM work_sessions WHERE id=?`).get(id) as unknown as WorkSession | undefined;
+  return row ? { ...cleanSession(row), items: listWorkItems(db, id) } : undefined;
+}
+
+export function updateWorkSession(db: AppDatabase, id: string, input: { title?: string; status?: WorkSessionStatus; softGoal?: number }): WorkSession | undefined {
+  const current = getWorkSession(db, id);
+  if (!current) return undefined;
+  const status = input.status ?? current.status;
+  const now = new Date().toISOString();
+  db.prepare(`UPDATE work_sessions SET title=?,status=?,soft_goal=?,updated_at=?,archived_at=? WHERE id=?`).run(
+    input.title?.trim() || current.title, status, Math.max(1, Math.round(input.softGoal ?? current.softGoal)), now,
+    status === "archived" ? current.archivedAt ?? now : null, id
+  );
+  return getWorkSession(db, id);
+}
+
+export function deleteWorkSession(db: AppDatabase, id: string): boolean {
+  return db.prepare("DELETE FROM work_sessions WHERE id=?").run(id).changes > 0;
+}
+
+export function appendWorkItems(db: AppDatabase, sessionId: string, posts: SourcePost[]): WorkItem[] {
+  const next = db.prepare("SELECT COALESCE(MAX(position),-1)+1 AS position FROM work_items WHERE session_id=?").get(sessionId) as { position: number };
+  const now = new Date().toISOString();
+  const stmt = db.prepare(`INSERT INTO work_items(id,session_id,position,source_post_json,status,created_at,updated_at) VALUES(?,?,?,?,'pending',?,?)`);
+  posts.forEach((post, index) => stmt.run(crypto.randomUUID(), sessionId, next.position + index, JSON.stringify(post), now, now));
+  db.prepare("UPDATE work_sessions SET updated_at=? WHERE id=?").run(now, sessionId);
+  return listWorkItems(db, sessionId);
+}
+
+export function listWorkItems(db: AppDatabase, sessionId: string): WorkItem[] {
+  const rows = db.prepare(`SELECT id,session_id as sessionId,position,source_post_json as sourcePostJson,status,recommendation,score,draft_response_json as draftResponseJson,created_at as createdAt,updated_at as updatedAt FROM work_items WHERE session_id=? ORDER BY position`).all(sessionId) as Array<Record<string, unknown>>;
+  return rows.map(rowToWorkItem);
+}
+
+export function updateWorkItem(db: AppDatabase, id: string, input: { status?: WorkItemStatus; recommendation?: string; score?: number; draftResponse?: unknown }): WorkItem | undefined {
+  const currentRow = db.prepare(`SELECT id,session_id as sessionId,position,source_post_json as sourcePostJson,status,recommendation,score,draft_response_json as draftResponseJson,created_at as createdAt,updated_at as updatedAt FROM work_items WHERE id=?`).get(id) as Record<string, unknown> | undefined;
+  if (!currentRow) return undefined;
+  const current = rowToWorkItem(currentRow);
+  const now = new Date().toISOString();
+  db.prepare(`UPDATE work_items SET status=?,recommendation=?,score=?,draft_response_json=?,updated_at=? WHERE id=?`).run(
+    input.status ?? current.status, input.recommendation ?? current.recommendation ?? null, input.score ?? current.score ?? null,
+    input.draftResponse === undefined ? (current.draftResponse ? JSON.stringify(current.draftResponse) : null) : JSON.stringify(input.draftResponse), now, id
+  );
+  return rowToWorkItem(db.prepare(`SELECT id,session_id as sessionId,position,source_post_json as sourcePostJson,status,recommendation,score,draft_response_json as draftResponseJson,created_at as createdAt,updated_at as updatedAt FROM work_items WHERE id=?`).get(id) as Record<string, unknown>);
+}
+
+export function saveOutcome(db: AppDatabase, input: { workItemId: string; kind: OutcomeKind; idempotencyKey: string; text?: string; externalId?: string }): { outcome: Outcome; created: boolean } {
+  const now = new Date().toISOString();
+  const id = crypto.randomUUID();
+  const result = db.prepare(`INSERT OR IGNORE INTO outcomes(id,work_item_id,kind,idempotency_key,text,external_id,created_at) VALUES(?,?,?,?,?,?,?)`)
+    .run(id,input.workItemId,input.kind,input.idempotencyKey,input.text ?? null,input.externalId ?? null,now);
+  const row = db.prepare(`SELECT id,work_item_id as workItemId,kind,idempotency_key as idempotencyKey,text,external_id as externalId,created_at as createdAt FROM outcomes WHERE idempotency_key=? OR (work_item_id=? AND kind=?) LIMIT 1`).get(input.idempotencyKey,input.workItemId,input.kind) as unknown as Outcome;
+  if (result.changes) updateWorkItem(db,input.workItemId,{status: input.kind});
+  return { outcome: cleanOutcome(row), created: result.changes > 0 };
+}
+
+export function getTodayProgress(db: AppDatabase, now = new Date()): { date: string; used: number; published: number; completed: number; softGoal: number; remaining: number } {
+  const date = now.toISOString().slice(0,10);
+  const since = `${date}T00:00:00.000Z`;
+  const counts = db.prepare(`SELECT SUM(kind='used') as used,SUM(kind='published') as published,COUNT(*) as completed FROM outcomes WHERE created_at>=?`).get(since) as { used: number|null; published:number|null; completed:number };
+  const goal = db.prepare(`SELECT COALESCE(MAX(soft_goal),8) as softGoal FROM work_sessions WHERE status='active'`).get() as { softGoal:number };
+  return { date, used: counts.used ?? 0, published: counts.published ?? 0, completed: counts.completed ?? 0, softGoal: goal.softGoal, remaining: Math.max(0,goal.softGoal-(counts.completed ?? 0)) };
+}
+
+export function reconcileArchiveOutcomes(db: AppDatabase, examples: WritingExampleInput[]): number {
+  let reconciled = 0;
+  const candidates=db.prepare(`SELECT wi.id,wi.draft_response_json as draftResponseJson FROM work_items wi LEFT JOIN outcomes o ON o.work_item_id=wi.id AND o.kind='published' WHERE o.id IS NULL AND wi.draft_response_json IS NOT NULL ORDER BY wi.updated_at DESC`).all() as Array<{id:string;draftResponseJson:string}>;
+  for (const example of examples) {
+    const normalized = normalizeForStorage(example.text);
+    const item = candidates.find((candidate) => {
+      try {
+        const draft=JSON.parse(candidate.draftResponseJson) as {suggestions?:Array<{text?:string}>};
+        return draft.suggestions?.some((suggestion)=>typeof suggestion.text === "string" && normalizeForStorage(suggestion.text) === normalized);
+      } catch { return false; }
+    });
+    if (item) {
+      const result=saveOutcome(db,{workItemId:item.id,kind:"published",idempotencyKey:`archive:${example.id}`,text:example.text,externalId:example.id});
+      if (result.created) reconciled += 1;
+    }
+  }
+  return reconciled;
+}
+
+function rowToWorkItem(row: Record<string, unknown>): WorkItem {
+  const recommendation=typeof row.recommendation === "string" ? row.recommendation as NonNullable<WorkItem["recommendation"]> : undefined;
+  return { id:String(row.id),sessionId:String(row.sessionId),position:Number(row.position),sourcePost:JSON.parse(String(row.sourcePostJson)),status:row.status as WorkItemStatus,
+    ...(recommendation ? {recommendation}:{}),...(typeof row.score === "number" ? {score:row.score}:{}),
+    ...(row.draftResponseJson ? {draftResponse:JSON.parse(String(row.draftResponseJson))}:{}),createdAt:String(row.createdAt),updatedAt:String(row.updatedAt) };
+}
+function cleanSession(row: WorkSession): WorkSession { const { archivedAt, ...rest }=row; return archivedAt ? row : rest; }
+function cleanOutcome(row: Outcome): Outcome { const {text,externalId,...rest}=row; return {...rest,...(text?{text}:{}),...(externalId?{externalId}:{})}; }
 
 export function initializeSettings(db: AppDatabase, defaults: Record<string, unknown>): void {
   const stmt = db.prepare("INSERT OR IGNORE INTO settings(key, value, updated_at) VALUES (?, ?, ?)");
@@ -251,6 +397,20 @@ export function getSimilarExamples(
        LIMIT ?`
     )
     .all(normalized, kind, filters.excludeXArchiveCreatedAtSince ?? null, filters.excludeXArchiveCreatedAtSince ?? null, limit) as unknown as WritingExample[];
+}
+
+export function getPairedReplyExamples(db: AppDatabase, sourceText: string, limit = 8): Array<{ sourceText: string; replyText: string }> {
+  const terms = normalizeForStorage(sourceText).split(" ").filter((term) => term.length >= 4).slice(0, 4);
+  if (!terms.length) return [];
+  const rows = db.prepare(`SELECT context_json as contextJson,final_text as replyText FROM feedback WHERE decision IN ('accepted','edited') AND final_text IS NOT NULL AND context_json IS NOT NULL ORDER BY created_at DESC LIMIT 200`).all() as Array<{contextJson:string;replyText:string}>;
+  return rows.flatMap((row) => {
+    try {
+      const context = JSON.parse(row.contextJson) as { sourcePost?: SourcePost; sourceText?: string };
+      const pairedSource = context.sourcePost?.text ?? context.sourceText;
+      if (!pairedSource || !terms.some((term) => normalizeForStorage(pairedSource).includes(term))) return [];
+      return [{sourceText:pairedSource,replyText:row.replyText}];
+    } catch { return []; }
+  }).slice(0,limit);
 }
 
 export function getStyleProfile(db: AppDatabase): string | undefined {

@@ -17,6 +17,64 @@ export interface SourcePost {
   text: string;
   url?: string;
   metrics?: Record<string, number | string | undefined>;
+  parentPost?: SourcePost;
+  quotedPost?: SourcePost;
+}
+
+export interface IntentAnalysis {
+  intent: string;
+  confidence: number;
+  needsClarification: boolean;
+  targetContext?: string;
+  parentContext?: string;
+  quotedContext?: string;
+  constraints: string[];
+}
+
+export interface DraftStrategy {
+  id: string;
+  label: string;
+  angle: string;
+  tone: string;
+  exploratory: boolean;
+}
+
+export type WorkSessionStatus = "active" | "completed" | "archived";
+export type WorkItemStatus = "pending" | "drafted" | "used" | "published" | "skipped";
+export type OutcomeKind = "used" | "published";
+
+export interface WorkSession {
+  id: string;
+  title: string;
+  status: WorkSessionStatus;
+  softGoal: number;
+  createdAt: string;
+  updatedAt: string;
+  archivedAt?: string;
+  items?: WorkItem[];
+}
+
+export interface WorkItem {
+  id: string;
+  sessionId: string;
+  position: number;
+  sourcePost: SourcePost;
+  status: WorkItemStatus;
+  recommendation?: ReactionRecommendation;
+  score?: number;
+  draftResponse?: DraftResponse;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface Outcome {
+  id: string;
+  workItemId: string;
+  kind: OutcomeKind;
+  idempotencyKey: string;
+  text?: string;
+  externalId?: string;
+  createdAt: string;
 }
 
 export interface GeneratePostRequest {
@@ -26,6 +84,7 @@ export interface GeneratePostRequest {
   instructions?: string;
   mode?: "standard" | "cheap";
   model?: "standard" | "advanced";
+  regenerationSeed?: string;
 }
 
 export interface GenerateCommentRequest {
@@ -34,6 +93,7 @@ export interface GenerateCommentRequest {
   instructions?: string;
   mode?: "standard" | "cheap";
   model?: "standard" | "advanced";
+  regenerationSeed?: string;
 }
 
 export interface GenerateRewriteRequest {
@@ -42,6 +102,7 @@ export interface GenerateRewriteRequest {
   instructions?: string;
   mode?: "standard" | "cheap";
   model?: "standard" | "advanced";
+  regenerationSeed?: string;
 }
 
 export interface VisiblePost extends SourcePost {
@@ -61,6 +122,10 @@ export interface DraftSuggestion {
 
 export interface DraftResponse {
   suggestions: DraftSuggestion[];
+  recommendation?: DraftSuggestion;
+  explore?: DraftSuggestion[];
+  intentAnalysis?: IntentAnalysis;
+  strategies?: DraftStrategy[];
 }
 
 export interface ScoredPost {
@@ -124,7 +189,7 @@ export function validateDraftResponse(value: unknown): DraftResponse {
     throw new Error("Draft response must include suggestions array.");
   }
 
-  const suggestions = value.suggestions.slice(0, 5).map((item, index) => {
+  const parsedSuggestions = value.suggestions.slice(0, 5).map((item, index) => {
     if (!isObject(item)) {
       throw new Error(`Draft suggestion ${index} must be an object.`);
     }
@@ -135,11 +200,47 @@ export function validateDraftResponse(value: unknown): DraftResponse {
     return { id, text, rationale, confidence };
   });
 
+  const suggestions = parsedSuggestions.filter((candidate, index, all) => all.findIndex((other) =>
+    openingKey(other.text) === openingKey(candidate.text) || textSimilarity(other.text, candidate.text) >= 0.82
+  ) === index);
+
   if (suggestions.length === 0) {
     throw new Error("Draft response must include at least one suggestion.");
   }
 
-  return { suggestions };
+  const recommendation = isObject(value.recommendation)
+    ? parseDraftSuggestion(value.recommendation, suggestions.length)
+    : suggestions[0];
+  const explore = Array.isArray(value.explore)
+    ? value.explore.slice(0, 4).map((item, index) => {
+        if (!isObject(item)) throw new Error(`Explore suggestion ${index} must be an object.`);
+        return parseDraftSuggestion(item, index);
+      })
+    : suggestions.slice(1, 5);
+  return {
+    suggestions,
+    ...(recommendation ? { recommendation } : {}),
+    ...(explore ? { explore } : {})
+  };
+}
+
+function openingKey(text: string): string { return normalizeText(text).toLowerCase().split(" ").slice(0,4).join(" "); }
+function textSimilarity(left: string, right: string): number {
+  const a=new Set(normalizeText(left).toLowerCase().split(/\W+/).filter(Boolean));
+  const b=new Set(normalizeText(right).toLowerCase().split(/\W+/).filter(Boolean));
+  const union=new Set([...a,...b]);
+  if (!union.size) return 1;
+  let overlap=0; for (const word of a) if (b.has(word)) overlap += 1;
+  return overlap/union.size;
+}
+
+function parseDraftSuggestion(item: Record<string, unknown>, index: number): DraftSuggestion {
+  return {
+    id: typeof item.id === "string" && item.id.trim() ? item.id : cryptoRandomId(),
+    text: stringField(item, "text"),
+    rationale: stringField(item, "rationale"),
+    confidence: numberField(item, "confidence", 0.1, 1)
+  };
 }
 
 export function validateScoreVisiblePostsResponse(value: unknown): ScoreVisiblePostsResponse {
@@ -199,6 +300,9 @@ export function validateGenerateRewriteRequest(value: unknown): GenerateRewriteR
   }
   if (value.model === "standard" || value.model === "advanced") {
     result.model = value.model;
+  }
+  if (typeof value.regenerationSeed === "string" && value.regenerationSeed.trim()) {
+    result.regenerationSeed = value.regenerationSeed.trim();
   }
   return result;
 }

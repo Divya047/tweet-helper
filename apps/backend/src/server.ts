@@ -13,6 +13,7 @@ import {
   type GenerateCommentRequest,
   type GeneratePostRequest,
   type GenerateRewriteRequest,
+  type IntentAnalysis,
   type ScoreVisiblePostsRequest
 } from "@tweet-helper/shared";
 import { parseTweetsJs, parseXArchiveZip } from "./archive.js";
@@ -20,7 +21,18 @@ import { assertWithinBudget } from "./budget.js";
 import { getConfig, loadEnvFiles, type AppConfig } from "./config.js";
 import {
   getCachedGeneration,
+  appendWorkItems,
+  createWorkSession,
+  deleteWorkSession,
+  getTodayProgress,
+  getWorkSession,
+  listWorkSessions,
+  reconcileArchiveOutcomes,
+  saveOutcome,
+  updateWorkItem,
+  updateWorkSession,
   getRecentXArchiveExamples,
+  getPairedReplyExamples,
   getSettings,
   getStyleProfile,
   initializeSettings,
@@ -81,7 +93,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Bui
 
   await app.register(cors, {
     origin: true,
-    methods: ["GET", "POST", "PUT", "OPTIONS"]
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
   });
 
   app.addHook("onRequest", async (request, reply) => {
@@ -122,12 +134,14 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Bui
     const body = request.body ?? {};
     const result = importArchiveInput(body);
     const imported = upsertWritingExamples(db, result.examples);
+    const reconciledOutcomes = reconcileArchiveOutcomes(db, result.examples);
     const styleProfile = rebuildStyleProfile(db);
     return {
       data: {
         imported,
         filesRead: result.filesRead,
-        styleProfile
+        styleProfile,
+        reconciledOutcomes
       }
     };
   });
@@ -136,8 +150,9 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Bui
     assertNonEmptyString(request.body?.topic, "topic");
     const body = request.body;
     const mode = body.mode === "cheap" ? "cheap" : "standard";
-    const requestedModel = body.model === "advanced" ? ADVANCED_MODEL : undefined;
+    const requestedModel = mode === "cheap" || body.model === "standard" ? undefined : ADVANCED_MODEL;
     const styleProfile = getStyleProfile(db);
+    const analysis = await analyzeIntent(db,togetherClient,body.topic);
     const examples = selectStyleExamples(db, `${body.topic} ${body.instructions ?? ""}`, "post");
     const recentArchiveExamples = getRecentXArchiveExamples(db, recentArchiveCutoff());
     const messages = buildPostMessages(body, styleProfile, examples);
@@ -145,6 +160,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Bui
       db,
       togetherClient,
       endpoint: "generate_post",
+      cacheable: false,
       cacheInput: {
         body,
         styleProfile,
@@ -160,7 +176,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Bui
         temperature: mode === "cheap" ? 0.65 : 0.8,
         ...(requestedModel ? { model: requestedModel } : {})
       },
-      validate: (value) => removeRecentArchiveCopies(validateDraftResponse(value), recentArchiveExamples)
+      validate: (value) => enrichDraftResponse(removeRecentArchiveCopies(validateDraftResponse(value), recentArchiveExamples),body.topic,undefined,analysis)
     });
     return response;
   });
@@ -169,23 +185,27 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Bui
     assertNonEmptyString(request.body?.sourcePost?.text, "sourcePost.text");
     const body = request.body;
     const mode = body.mode === "cheap" ? "cheap" : "standard";
-    const requestedModel = body.model === "advanced" ? ADVANCED_MODEL : undefined;
+    const requestedModel = mode === "cheap" || body.model === "standard" ? undefined : ADVANCED_MODEL;
     const styleProfile = getStyleProfile(db);
+    const analysis = await analyzeIntent(db,togetherClient,body.sourcePost.text,body.sourcePost);
     const examples = selectStyleExamples(
       db,
       `${body.sourcePost.text} ${body.angle ?? ""} ${body.instructions ?? ""}`,
       "comment"
     );
+    const pairedExamples=getPairedReplyExamples(db,body.sourcePost.text);
     const recentArchiveExamples = getRecentXArchiveExamples(db, recentArchiveCutoff());
-    const messages = buildCommentMessages(body, styleProfile, examples);
+    const messages = buildCommentMessages(body, styleProfile, examples,pairedExamples);
     const response = await runCachedJsonGeneration({
       db,
       togetherClient,
       endpoint: "generate_comment",
+      cacheable: false,
       cacheInput: {
         body,
         styleProfile,
         examples: examples.map((example) => example.id),
+        pairedExamples,
         blockedExamples: recentArchiveExamples.map((example) => example.id),
         model: requestedModel ?? "default"
       },
@@ -197,7 +217,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Bui
         temperature: mode === "cheap" ? 0.6 : 0.75,
         ...(requestedModel ? { model: requestedModel } : {})
       },
-      validate: (value) => removeRecentArchiveCopies(validateDraftResponse(value), recentArchiveExamples)
+      validate: (value) => enrichDraftResponse(removeRecentArchiveCopies(validateDraftResponse(value), recentArchiveExamples),body.sourcePost.text,body.sourcePost,analysis)
     });
     return response;
   });
@@ -205,8 +225,9 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Bui
   app.post<{ Body: GenerateRewriteRequest }>("/api/generate/rewrite", async (request) => {
     const body = validateGenerateRewriteRequest(request.body);
     const mode = body.mode === "cheap" ? "cheap" : "standard";
-    const requestedModel = body.model === "advanced" ? ADVANCED_MODEL : undefined;
+    const requestedModel = mode === "cheap" || body.model === "standard" ? undefined : ADVANCED_MODEL;
     const styleProfile = getStyleProfile(db);
+    const analysis = await analyzeIntent(db,togetherClient,body.text);
     const examples = selectStyleExamples(db, `${body.text} ${body.instructions ?? ""}`, body.kind);
     const recentArchiveExamples = getRecentXArchiveExamples(db, recentArchiveCutoff());
     const messages = buildRewriteMessages(body, styleProfile, examples);
@@ -214,6 +235,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Bui
       db,
       togetherClient,
       endpoint: "generate_rewrite",
+      cacheable: false,
       cacheInput: {
         body,
         styleProfile,
@@ -229,7 +251,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Bui
         temperature: mode === "cheap" ? 0.55 : 0.7,
         ...(requestedModel ? { model: requestedModel } : {})
       },
-      validate: (value) => removeRecentArchiveCopies(validateDraftResponse(value), recentArchiveExamples)
+      validate: (value) => enrichDraftResponse(removeRecentArchiveCopies(validateDraftResponse(value), recentArchiveExamples),body.text,undefined,analysis)
     });
     return response;
   });
@@ -241,7 +263,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Bui
     }
     const sanitizedPosts = posts
       .filter((post) => typeof post.text === "string" && post.text.trim())
-      .slice(0, 20)
+      .slice(0, 24)
       .map((post, index) => ({
         ...post,
         id: post.id?.trim() || `visible-${index}`,
@@ -304,6 +326,40 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Bui
     return { data: { id, learned } };
   });
 
+  app.post<{ Body: { title?: string; softGoal?: number } }>("/api/work-sessions", async (request) => ({ data: createWorkSession(db, request.body ?? {}) }));
+  app.get<{ Querystring: { includeArchived?: string } }>("/api/work-sessions", async (request) => ({ data: listWorkSessions(db, request.query?.includeArchived === "true") }));
+  app.get<{ Params: { id: string } }>("/api/work-sessions/:id", async (request, reply) => {
+    const session = getWorkSession(db, request.params.id);
+    return session ? { data: session } : reply.status(404).send({error:{message:"Work session not found.",statusCode:404}});
+  });
+  app.patch<{ Params: { id: string }; Body: { title?: string; status?: "active"|"completed"|"archived"; softGoal?: number } }>("/api/work-sessions/:id", async (request, reply) => {
+    const session = updateWorkSession(db, request.params.id, request.body ?? {});
+    return session ? {data:session} : reply.status(404).send({error:{message:"Work session not found.",statusCode:404}});
+  });
+  app.delete<{ Params: { id: string } }>("/api/work-sessions/:id", async (request, reply) => deleteWorkSession(db,request.params.id) ? reply.status(204).send() : reply.status(404).send({error:{message:"Work session not found.",statusCode:404}}));
+
+  app.post<{ Params: { id: string }; Body: { posts?: GenerateCommentRequest["sourcePost"][] } }>("/api/work-sessions/:id/items", async (request) => {
+    if (!getWorkSession(db,request.params.id)) throw Object.assign(new Error("Work session not found."),{statusCode:404});
+    const posts=(request.body?.posts ?? []).filter((post) => typeof post?.text === "string" && post.text.trim()).slice(0,24);
+    if (!posts.length) throw new Error("posts must include at least one source post.");
+    return {data:appendWorkItems(db,request.params.id,posts)};
+  });
+  app.post<{ Params: { id: string }; Body: { posts?: GenerateCommentRequest["sourcePost"][] } }>("/api/work-sessions/:id/batch", async (request) => {
+    if (!getWorkSession(db,request.params.id)) throw Object.assign(new Error("Work session not found."),{statusCode:404});
+    const posts=selectEightPostBatch(request.body?.posts ?? []);
+    return {data:{items:appendWorkItems(db,request.params.id,posts),questionCount:posts.filter(isEasyQuestion).length}};
+  });
+  app.patch<{ Params: { id: string }; Body: { status?: "pending"|"drafted"|"used"|"published"|"skipped"; recommendation?: string; score?: number; draftResponse?: unknown } }>("/api/work-items/:id", async (request, reply) => {
+    const item=updateWorkItem(db,request.params.id,request.body ?? {});
+    return item ? {data:item} : reply.status(404).send({error:{message:"Work item not found.",statusCode:404}});
+  });
+  app.post<{ Params: { id:string }; Body: { kind?: "used"|"published"; idempotencyKey?:string; text?:string; externalId?:string } }>("/api/work-items/:id/outcomes",async(request)=>{
+    if (request.body?.kind !== "used" && request.body?.kind !== "published") throw new Error("kind must be used or published.");
+    assertNonEmptyString(request.body.idempotencyKey,"idempotencyKey");
+    return {data:saveOutcome(db,{workItemId:request.params.id,kind:request.body.kind,idempotencyKey:request.body.idempotencyKey,...(request.body.text?{text:request.body.text}:{}),...(request.body.externalId?{externalId:request.body.externalId}:{})})};
+  });
+  app.get("/api/progress/today",async()=>({data:getTodayProgress(db)}));
+
   return { app, db, config };
 }
 
@@ -335,7 +391,26 @@ function importArchiveInput(body: ImportArchiveBody): ImportArchiveParsed {
 
 function isProtectedApiPath(url: string): boolean {
   const path = url.split("?")[0] ?? url;
-  return path.startsWith("/api/generate/") || path === "/api/feedback" || path === "/api/settings";
+  return path.startsWith("/api/generate/") || path.startsWith("/api/work-") || path.startsWith("/api/progress/") || path === "/api/feedback" || path === "/api/settings";
+}
+
+function isEasyQuestion(post: GenerateCommentRequest["sourcePost"]): boolean {
+  const text=post.text.toLowerCase();
+  return text.includes("?") && /\b(you|your|favorite|prefer|experience|recommend|which|what|how)\b/.test(text);
+}
+
+export function selectEightPostBatch(posts: GenerateCommentRequest["sourcePost"][]): GenerateCommentRequest["sourcePost"][] {
+  const valid=posts.filter((post)=>typeof post?.text === "string" && post.text.trim());
+  const questions=valid.filter(isEasyQuestion).slice(0,4);
+  const desired=Math.min(4,Math.max(3,questions.length));
+  const selected=questions.slice(0,desired);
+  const selectedKeys=new Set(selected.map((post)=>post.id ?? post.text));
+  for (const post of valid) {
+    if (selected.length >= 8) break;
+    const key=post.id ?? post.text;
+    if (!selectedKeys.has(key)) {selected.push(post);selectedKeys.add(key);}
+  }
+  return selected.slice(0,8);
 }
 
 function recentArchiveCutoff(): string {
@@ -355,6 +430,37 @@ function removeRecentArchiveCopies(response: DraftResponse, recentExamples: Writ
   return { suggestions };
 }
 
+function enrichDraftResponse(response: DraftResponse, input: string, source?: GenerateCommentRequest["sourcePost"], analyzed?: IntentAnalysis): DraftResponse {
+  const words=normalizeForStorage(input).split(" ").filter(Boolean);
+  const confidence=Math.min(0.95,Math.max(0.25,words.length/12));
+  const labels=["Recommended","Specific","Constructive tension","Experience question","Concise practical"];
+  const suggestions=response.suggestions;
+  const recommendation=response.recommendation ?? suggestions[0];
+  return {
+    ...response,
+    ...(recommendation ? {recommendation}:{}),
+    explore:response.explore ?? suggestions.slice(1,5),
+    intentAnalysis:analyzed ?? {intent:words.slice(0,8).join(" ") || "unclear",confidence,needsClarification:confidence<0.5,
+      ...(source?{targetContext:source.text}:{}),...(source?.parentPost?{parentContext:source.parentPost.text}:{}),...(source?.quotedPost?{quotedContext:source.quotedPost.text}:{}),constraints:[]},
+    strategies:suggestions.slice(0,5).map((suggestion,index)=>({id:`strategy-${suggestion.id}`,label:labels[index] ?? `Explore ${index}`,angle:suggestion.rationale,tone:index===0?"on-brand":"exploratory",exploratory:index>0}))
+  };
+}
+
+async function analyzeIntent(db: AppDatabase, togetherClient: TogetherClient, input: string, source?: GenerateCommentRequest["sourcePost"]): Promise<IntentAnalysis> {
+  const fallback=():IntentAnalysis=>{
+    const words=normalizeForStorage(input).split(" ").filter(Boolean); const confidence=Math.min(.95,Math.max(.25,words.length/12));
+    return {intent:words.slice(0,8).join(" ")||"unclear",confidence,needsClarification:confidence<.5,...(source?{targetContext:source.text}:{}),...(source?.parentPost?{parentContext:source.parentPost.text}:{}),...(source?.quotedPost?{quotedContext:source.quotedPost.text}:{}),constraints:[]};
+  };
+  const result=await runCachedJsonGeneration({db,togetherClient,endpoint:"analyze_intent",cacheInput:{input,source},request:{model:DEFAULT_MODEL,messages:[
+    {role:"system",content:"Analyze intent and draft strategy. Separate target, parent, and quoted context. Mark needsClarification when confidence is below 0.5. Return JSON only."},
+    {role:"user",content:JSON.stringify({input,source})}],schemaName:"IntentAnalysis",schema:{type:"object",properties:{intent:{type:"string"},confidence:{type:"number"},needsClarification:{type:"boolean"},targetContext:{type:"string"},parentContext:{type:"string"},quotedContext:{type:"string"},constraints:{type:"array",items:{type:"string"}}},required:["intent","confidence","needsClarification","constraints"]},maxTokens:350,temperature:.2},validate:(value)=>{
+      if (!value || typeof value !== "object") return fallback(); const item=value as Record<string,unknown>;
+      if (typeof item.intent !== "string" || typeof item.confidence !== "number") return fallback();
+      return {intent:item.intent,confidence:Math.max(0,Math.min(1,item.confidence)),needsClarification:item.needsClarification===true || item.confidence<.5,constraints:Array.isArray(item.constraints)?item.constraints.filter((x):x is string=>typeof x==="string"):[],...(typeof item.targetContext==="string"?{targetContext:item.targetContext}:{}),...(typeof item.parentContext==="string"?{parentContext:item.parentContext}:{}),...(typeof item.quotedContext==="string"?{quotedContext:item.quotedContext}:{})};
+    }});
+  return result.data;
+}
+
 async function runCachedJsonGeneration<T>(options: {
   db: AppDatabase;
   togetherClient: TogetherClient;
@@ -362,6 +468,7 @@ async function runCachedJsonGeneration<T>(options: {
   cacheInput: unknown;
   request: JsonCompletionRequest;
   validate: (value: unknown) => T;
+  cacheable?: boolean;
 }): Promise<{
   data: T;
   meta: {
@@ -379,7 +486,7 @@ async function runCachedJsonGeneration<T>(options: {
     input: options.cacheInput
   });
 
-  const cached = getCachedGeneration(options.db, cacheKey);
+  const cached = options.cacheable === false ? undefined : getCachedGeneration(options.db, cacheKey);
   if (cached) {
     return {
       data: options.validate(JSON.parse(cached.responseJson)),
@@ -397,14 +504,9 @@ async function runCachedJsonGeneration<T>(options: {
   assertWithinBudget(options.db, inputTokens, options.request.maxTokens);
   const completion = await options.togetherClient.completeJson(options.request);
   const data = options.validate(completion.value);
-  saveCachedGeneration(
-    options.db,
-    cacheKey,
-    JSON.stringify(data),
-    completion.inputTokens,
-    completion.outputTokens,
-    completion.costUsd
-  );
+  if (options.cacheable !== false) {
+    saveCachedGeneration(options.db,cacheKey,JSON.stringify(data),completion.inputTokens,completion.outputTokens,completion.costUsd);
+  }
   logUsage(options.db, options.endpoint, cacheKey, completion.inputTokens, completion.outputTokens, completion.costUsd);
   return {
     data,

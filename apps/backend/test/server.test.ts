@@ -71,7 +71,7 @@ describe("backend routes", () => {
       payload: { topic: "local-first tools", goal: "authentic" }
     });
 
-    expect(cachedResponse.json().meta.cached).toBe(true);
+    expect(cachedResponse.json().meta.cached).toBe(false);
     await app.close();
   });
 
@@ -221,9 +221,9 @@ describe("backend routes", () => {
     expect(response.statusCode).toBe(200);
     expect(response.json().data.suggestions).toHaveLength(2);
     expect(response.json().meta.cached).toBe(false);
-    expect(cached.json().meta.cached).toBe(true);
-    expect(requests).toHaveLength(1);
-    expect(JSON.stringify(requests[0]?.messages)).toContain("Preserve the user's meaning");
+    expect(cached.json().meta.cached).toBe(false);
+    expect(requests).toHaveLength(3);
+    expect(JSON.stringify(requests[1]?.messages)).toContain("Preserve the user's meaning");
     await app.close();
   });
 });

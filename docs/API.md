@@ -130,6 +130,21 @@ Response uses the same draft envelope as post/comment generation:
 
 Recommendations are limited to `reply`, `quote idea`, `save for later`, or `skip`.
 
+Generation responses remain compatible through `data.suggestions`. They now also expose `recommendation`, up to four `explore` variants, structured `intentAnalysis` (including separate target, parent, and quoted context when supplied), and `strategies`. Final prose is deliberately not cached; callers may pass `regenerationSeed` to request a fresh direction. Structured scoring remains cacheable. Up to 24 visible posts may be scored per request.
+
+## Work sessions
+
+- `POST /api/work-sessions` creates a session (`title`, optional `softGoal`, default 8).
+- `GET /api/work-sessions?includeArchived=true` lists sessions.
+- `GET`, `PATCH`, and `DELETE /api/work-sessions/:id` read, update/archive, or delete one.
+- `POST /api/work-sessions/:id/items` appends up to 24 source posts.
+- `POST /api/work-sessions/:id/batch` selects and appends an eight-post batch. When enough candidates exist, three easy preference/experience questions are included, with an optional fourth.
+- `PATCH /api/work-items/:id` updates status, recommendation, score, or its draft response.
+- `POST /api/work-items/:id/outcomes` records `used` or `published`. `idempotencyKey` is required; retries return the existing outcome with `created: false`.
+- `GET /api/progress/today` returns today’s used/published counts, the active soft goal, and remaining progress.
+
+Archive imports reconcile exact generated-draft matches into published outcomes without duplicating an existing outcome. Accepted/edited feedback with `context.sourcePost` is retained as a source-to-reply pair for retrieval.
+
 ## Feedback
 
 `POST /api/feedback`
