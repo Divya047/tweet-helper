@@ -1,8 +1,19 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from "vitest";
-import { extractVisiblePosts, findComposers, getNearestSourcePost, insertTextIntoComposer } from "../src/dom.js";
+import { expandTruncatedPostText, extractVisiblePosts, findComposers, getComposerActionPlacement, getComposerContext, getNearestSourcePost, insertTextIntoComposer } from "../src/dom.js";
 
 describe("extension DOM helpers", () => {
+  it("clicks X show-more controls before extracting post text", async () => {
+    document.body.innerHTML = `<article data-testid="tweet"><div data-testid="tweetText">Truncated post text that is long enough.</div><button data-testid="tweet-text-show-more-link">Show more</button></article>`;
+    const article = document.querySelector<HTMLElement>("article")!;
+    vi.spyOn(article, "getBoundingClientRect").mockReturnValue(createRect({ top: 10, bottom: 90 }));
+    const button = document.querySelector<HTMLButtonElement>("button")!;
+    button.addEventListener("click", () => { document.querySelector('[data-testid="tweetText"]')!.textContent = "The complete expanded post text is now available to the AI."; });
+
+    expect(await expandTruncatedPostText(document, true)).toBe(1);
+    expect(extractVisiblePosts(document)[0]?.text).toBe("The complete expanded post text is now available to the AI.");
+  });
+
   it("extracts visible posts from X-like articles", () => {
     document.body.innerHTML = `
       <article data-testid="tweet">
@@ -65,6 +76,34 @@ describe("extension DOM helpers", () => {
     insertTextIntoComposer(composer, "Draft text");
 
     expect(composer.textContent).toBe("Draft text");
+  });
+
+  it("places the helper action beside the native inline submit button", () => {
+    document.body.innerHTML = `
+      <article data-testid="tweet">
+        <div><div data-testid="tweetTextarea_0" contenteditable="true"></div></div>
+        <div data-testid="toolBar"><div class="submit-slot"><button data-testid="tweetButtonInline">Post</button></div></div>
+      </article>
+    `;
+    const composer = findComposers(document)[0]!;
+    const submit = document.querySelector<HTMLElement>('[data-testid="tweetButtonInline"]')!;
+
+    expect(getComposerActionPlacement(composer)).toEqual({ host: submit.parentElement?.parentElement, before: submit.parentElement });
+  });
+
+  it("finds the action row for the home composer without a dialog or article wrapper", () => {
+    document.body.innerHTML = `
+      <main>
+        <section class="home-composer">
+          <div class="editor"><div data-testid="tweetTextarea_0" contenteditable="true"></div></div>
+          <div class="actions"><div class="submit-slot"><button data-testid="tweetButtonInline">Post</button></div></div>
+        </section>
+      </main>
+    `;
+    const composer = findComposers(document)[0]!;
+    const submit = document.querySelector<HTMLElement>('[data-testid="tweetButtonInline"]')!;
+
+    expect(getComposerActionPlacement(composer)).toEqual({ host: submit.parentElement?.parentElement, before: submit.parentElement });
   });
 
   it("extracts the source post for a reply modal composer", () => {
@@ -135,6 +174,13 @@ describe("extension DOM helpers", () => {
       text: "This is the source post that should drive the reply."
     });
     expect(sourcePost?.text).not.toContain("quoted post");
+  });
+
+  it("keeps an article's main post as target and its nested quote as quoted context", () => {
+    document.body.innerHTML = `<article data-testid="tweet"><a href="/main">Main</a><div data-testid="tweetText">Main source post</div><a href="/main/status/1">t</a><a href="/quote">Quote</a><div data-testid="tweetText">Quoted post details</div><a href="/quote/status/2">t</a><div role="textbox" contenteditable="true"></div></article>`;
+    const context = getComposerContext(document.querySelector<HTMLElement>('[role="textbox"]')!);
+    expect(context.target?.text).toBe("Main source post");
+    expect(context.quoted?.text).toBe("Quoted post details");
   });
 });
 

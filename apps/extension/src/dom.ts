@@ -5,6 +5,22 @@ const TWEET_TEXT_SELECTOR = '[data-testid="tweetText"]';
 const TWEET_ARTICLE_SELECTOR = 'article[data-testid="tweet"], article';
 const COMPOSER_SELECTOR = '[data-testid="tweetTextarea_0"][contenteditable="true"], [role="textbox"][contenteditable="true"]';
 const DIALOG_SELECTOR = '[role="dialog"]';
+const SHOW_MORE_SELECTOR = '[data-testid="tweet-text-show-more-link"], button, [role="button"]';
+
+export async function expandTruncatedPostText(root: ParentNode = document, visibleOnly = false): Promise<number> {
+  const candidates = [...root.querySelectorAll<HTMLElement>(SHOW_MORE_SELECTOR)].filter((element) => {
+    const label = normalizeElementText(element).toLowerCase();
+    if (element.getAttribute("data-testid") !== "tweet-text-show-more-link" && label !== "show more") return false;
+    const container = element.closest<HTMLElement>(`${TWEET_ARTICLE_SELECTOR}, ${DIALOG_SELECTOR}`);
+    if (!container) return false;
+    return !visibleOnly || container.matches(DIALOG_SELECTOR) || isInViewport(container);
+  });
+
+  for (const candidate of candidates) candidate.click();
+  // X updates tweetText asynchronously after the native click handler runs.
+  if (candidates.length) await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+  return candidates.length;
+}
 
 export function extractVisiblePosts(root: ParentNode = document): VisiblePost[] {
   const articles = [...root.querySelectorAll<HTMLElement>(TWEET_ARTICLE_SELECTOR)]
@@ -51,6 +67,19 @@ function isInViewport(element: HTMLElement): boolean {
 
 export function findComposers(root: ParentNode = document): HTMLElement[] {
   return [...root.querySelectorAll<HTMLElement>(COMPOSER_SELECTOR)];
+}
+
+export function getComposerActionPlacement(composer: HTMLElement): { host: HTMLElement; before?: HTMLElement } {
+  const submitSelector = '[data-testid="tweetButtonInline"], [data-testid="tweetButton"]';
+  let ancestor = composer.parentElement;
+
+  while (ancestor && ancestor !== document.body) {
+    const submit = ancestor.querySelector<HTMLElement>(submitSelector);
+    const submitSlot = submit?.parentElement;
+    if (submitSlot?.parentElement) return { host: submitSlot.parentElement, before: submitSlot };
+    ancestor = ancestor.parentElement;
+  }
+  return { host: composer.parentElement ?? composer };
 }
 
 export function isComposerElement(element: Element | null): element is HTMLElement {
@@ -157,9 +186,9 @@ export function getComposerContext(composer: HTMLElement): ComposerContext {
   const container = dialog ?? article;
   const nodes = container ? getTweetTextNodes(container).filter((node) => !composer.contains(node)) : [];
   const posts = nodes.map((node) => sourcePostFromContainer(container!, node)).filter((post): post is PostContext => !!post);
-  const target = posts.at(-1);
-  const parent = posts.length > 1 ? posts.at(-2) : undefined;
-  const quoted = article && nodes.length > 1 ? posts[1] : undefined;
+  const target = article ? posts[0] : posts.at(-1);
+  const parent = !article && posts.length > 1 ? posts.at(-2) : undefined;
+  const quoted = article && posts.length > 1 ? posts[1] : undefined;
   return {
     kind: target ? "reply" : "post",
     currentText: getComposerText(composer),

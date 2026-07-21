@@ -16,11 +16,20 @@ export async function setBackendUrl(backendUrl: string): Promise<void> {
 
 export async function postJson<T>(path: string, body: unknown): Promise<T> {
   const backendUrl = await getBackendUrl();
-  const response = await fetch(`${backendUrl}${path}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body)
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${backendUrl}${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(60_000)
+    });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "TimeoutError") {
+      throw new Error("Backend request timed out. Try again in a moment.");
+    }
+    throw error;
+  }
   const json = (await response.json().catch(() => null)) as T | { error?: { message?: string } } | null;
   if (!response.ok) {
     const message = isErrorResponse(json) ? json.error?.message : undefined;

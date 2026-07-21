@@ -1,1 +1,28 @@
-:root{color-scheme:light dark;font:14px/1.5 system-ui,sans-serif;background:Canvas;color:CanvasText}*{box-sizing:border-box}body{margin:0;min-width:260px}header{padding:18px 16px 12px;border-bottom:1px solid color-mix(in srgb,CanvasText 18%,transparent)}header div{display:grid}header span{color:color-mix(in srgb,CanvasText 65%,transparent);font-size:12px}nav{display:grid;grid-template-columns:repeat(3,1fr);gap:4px;padding:8px}button,textarea,input{font:inherit}button{min-height:44px;border:1px solid color-mix(in srgb,CanvasText 28%,transparent);border-radius:10px;background:Canvas;color:CanvasText;font-weight:650;cursor:pointer}button:hover{background:color-mix(in srgb,CanvasText 8%,Canvas)}button:focus-visible,textarea:focus-visible,input:focus-visible{outline:3px solid Highlight;outline-offset:2px}nav button[aria-selected=true]{background:CanvasText;color:Canvas}main{padding:16px;display:grid;gap:14px;overflow-wrap:anywhere}.card{border:1px solid color-mix(in srgb,CanvasText 20%,transparent);border-radius:12px;padding:14px;display:grid;gap:9px}.muted{color:color-mix(in srgb,CanvasText 65%,transparent)}.goals{display:grid;grid-template-columns:1fr 1fr;gap:10px}.goal strong{font-size:22px}.bar{height:7px;border-radius:9px;background:color-mix(in srgb,CanvasText 14%,transparent);overflow:hidden}.bar i{display:block;height:100%;max-width:100%;background:Highlight}.primary{background:CanvasText;color:Canvas}.recommended{border:2px solid Highlight}.strategy{font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:Highlight}textarea{width:100%;min-height:96px;padding:10px;border:1px solid color-mix(in srgb,CanvasText 30%,transparent);border-radius:10px;background:Canvas;color:CanvasText}#status{min-height:44px;padding:10px 16px;color:color-mix(in srgb,CanvasText 70%,transparent)}@media(max-width:300px){.goals{grid-template-columns:1fr}nav{gap:2px;padding:6px}main{padding:12px}}
+:root{color-scheme:light dark;font:14px/1.5 system-ui,sans-serif;background:Canvas;color:CanvasText}
+*{box-sizing:border-box}
+body{margin:0;min-width:260px}
+header{padding:18px 16px 12px;border-bottom:1px solid color-mix(in srgb,CanvasText 18%,transparent)}
+header div{display:grid}
+header span{color:color-mix(in srgb,CanvasText 65%,transparent);font-size:12px}
+nav{display:grid;grid-template-columns:repeat(3,1fr);gap:4px;padding:8px}
+button,textarea,input,select{font:inherit}
+button{min-height:44px;border:1px solid color-mix(in srgb,CanvasText 28%,transparent);border-radius:10px;background:Canvas;color:CanvasText;font-weight:650;cursor:pointer}
+button:hover{background:color-mix(in srgb,CanvasText 8%,Canvas)}
+button:focus-visible,textarea:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid Highlight;outline-offset:2px}
+nav button[aria-selected=true]{background:CanvasText;color:Canvas}
+main{padding:16px;display:grid;gap:14px;overflow-wrap:anywhere}
+.card{border:1px solid color-mix(in srgb,CanvasText 20%,transparent);border-radius:12px;padding:14px;display:grid;gap:9px}
+.muted{color:color-mix(in srgb,CanvasText 65%,transparent)}
+.goals{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.goal strong{font-size:22px}
+.bar{height:7px;border-radius:9px;background:color-mix(in srgb,CanvasText 14%,transparent);overflow:hidden}
+.bar i{display:block;height:100%;max-width:100%;background:Highlight}
+.primary{background:CanvasText;color:Canvas}
+.recommended{border:2px solid Highlight}
+.strategy{font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:Highlight}
+textarea,input,select{width:100%;padding:10px;border:1px solid color-mix(in srgb,CanvasText 30%,transparent);border-radius:10px;background:Canvas;color:CanvasText}
+textarea{min-height:96px}
+.growth-controls{display:grid;gap:7px;padding:12px;border-radius:12px;background:color-mix(in srgb,Highlight 7%,Canvas)}
+.growth-controls label:not(:first-child){margin-top:4px}
+#status{min-height:44px;padding:10px 16px;color:color-mix(in srgb,CanvasText 70%,transparent)}
+@media(max-width:300px){.goals{grid-template-columns:1fr}nav{gap:2px;padding:6px}main{padding:12px}}

@@ -99,12 +99,51 @@ describe("backend routes", () => {
       method: "POST",
       url: "/api/score/visible-posts",
       payload: {
-        posts: [{ id: "123", text: "Local software should make privacy the default.", author: "dev" }]
+        posts: [{ id: "123", text: "Local software should make privacy the default.", author: "dev" }],
+        audience: "Tech founders, indie hackers, and builders shipping products",
+        contentPillar: "building",
+        desiredOutcome: "earn relevant follows"
       }
     });
 
     expect(response.statusCode).toBe(200);
     expect(response.json().data.rankedPosts[0].recommendation).toBe("reply");
+    await app.close();
+  });
+
+  it("forces comment-bait posts to skip for high-intent scoring", async () => {
+    const db = openDatabase(":memory:");
+    const mockTogether = createMockTogetherClient(() => ({
+      rankedPosts: [
+        {
+          id: "bait",
+          score: 92,
+          recommendation: "reply",
+          reason: "High engagement potential.",
+          suggestedAngle: "Agree and ask a follow-up.",
+          risks: []
+        }
+      ]
+    }));
+    const { app } = await buildServer({
+      db,
+      config: { dbPath: ":memory:", dailyBudgetUsd: 10, monthlyBudgetUsd: 10 },
+      togetherClient: mockTogether
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/score/visible-posts",
+      payload: {
+        posts: [{ id: "bait", text: "Comment YES if you agree and tag someone who needs to hear this.", author: "growth" }]
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    const ranked = response.json().data.rankedPosts[0];
+    expect(ranked.recommendation).toBe("skip");
+    expect(ranked.score).toBeLessThanOrEqual(25);
+    expect(ranked.risks).toContain("comment_bait");
     await app.close();
   });
 

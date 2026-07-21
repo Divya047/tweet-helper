@@ -143,6 +143,8 @@ Generation responses remain compatible through `data.suggestions`. They now also
 - `POST /api/work-items/:id/outcomes` records `used` or `published`. `idempotencyKey` is required; retries return the existing outcome with `created: false`.
 - `GET /api/progress/today` returns today’s used/published counts, the active soft goal, and remaining progress.
 
+`POST /api/outcomes` is the cross-platform capture endpoint used when the client does not already have a backend work-item ID. It accepts `status`, `platform`, `finalText`, `clientEventId`, optional source/context, session/work IDs, and an external X status ID. The backend creates a captured work item when necessary, learns from the final text/source pair, and deduplicates retries by `clientEventId`.
+
 Archive imports reconcile exact generated-draft matches into published outcomes without duplicating an existing outcome. Accepted/edited feedback with `context.sourcePost` is retained as a source-to-reply pair for retrieval.
 
 ## Feedback

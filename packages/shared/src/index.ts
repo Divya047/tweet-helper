@@ -10,6 +10,25 @@ export const TOGETHER_GLM_5_2_PRICING = {
 export type ContentKind = "post" | "comment" | "reply";
 export type FeedbackDecision = "accepted" | "edited" | "rejected" | "skipped";
 export type ReactionRecommendation = "reply" | "quote idea" | "save for later" | "skip";
+export type ContentPillar = "building" | "teaching" | "point-of-view" | string;
+export type DesiredOutcome =
+  | "earn relevant follows"
+  | "start a useful conversation"
+  | "create something worth saving"
+  | string;
+
+export interface GrowthPreferences {
+  audience: string;
+  pillar: ContentPillar;
+  outcome: DesiredOutcome;
+}
+
+/** Defaults for a tech-dev founder seeking peer builders. */
+export const DEFAULT_GROWTH_PREFERENCES: GrowthPreferences = {
+  audience: "Tech founders, indie hackers, and builders shipping products",
+  pillar: "building",
+  outcome: "earn relevant follows"
+};
 
 export interface SourcePost {
   id?: string;
@@ -42,6 +61,7 @@ export interface DraftStrategy {
 export type WorkSessionStatus = "active" | "completed" | "archived";
 export type WorkItemStatus = "pending" | "drafted" | "used" | "published" | "skipped";
 export type OutcomeKind = "used" | "published";
+export type OutcomePlatform = "chrome" | "ios";
 
 export interface WorkSession {
   id: string;
@@ -74,13 +94,32 @@ export interface Outcome {
   idempotencyKey: string;
   text?: string;
   externalId?: string;
+  platform?: OutcomePlatform;
+  context?: Record<string, unknown>;
   createdAt: string;
+}
+
+export interface OutcomeRequest {
+  status: OutcomeKind;
+  platform: OutcomePlatform;
+  finalText: string;
+  clientEventId: string;
+  contentKind?: "post" | "reply";
+  sourceText?: string;
+  sourceURL?: string;
+  sessionId?: string;
+  workId?: string;
+  externalId?: string;
+  context?: Record<string, unknown>;
 }
 
 export interface GeneratePostRequest {
   topic: string;
   goal?: "authentic" | "engagement" | "business" | string;
   length?: "short" | "medium" | "thread";
+  audience?: string;
+  contentPillar?: ContentPillar;
+  desiredOutcome?: DesiredOutcome;
   instructions?: string;
   mode?: "standard" | "cheap";
   model?: "standard" | "advanced";
@@ -90,6 +129,9 @@ export interface GeneratePostRequest {
 export interface GenerateCommentRequest {
   sourcePost: SourcePost;
   angle?: string;
+  audience?: string;
+  contentPillar?: ContentPillar;
+  desiredOutcome?: DesiredOutcome;
   instructions?: string;
   mode?: "standard" | "cheap";
   model?: "standard" | "advanced";
@@ -111,6 +153,9 @@ export interface VisiblePost extends SourcePost {
 
 export interface ScoreVisiblePostsRequest {
   posts: VisiblePost[];
+  audience?: string;
+  contentPillar?: ContentPillar;
+  desiredOutcome?: DesiredOutcome;
 }
 
 export interface DraftSuggestion {
@@ -118,10 +163,13 @@ export interface DraftSuggestion {
   text: string;
   rationale: string;
   confidence: number;
+  strategy?: string;
+  isQuestion?: boolean;
 }
 
 export interface DraftResponse {
   suggestions: DraftSuggestion[];
+  recommendedId?: string;
   recommendation?: DraftSuggestion;
   explore?: DraftSuggestion[];
   intentAnalysis?: IntentAnalysis;
@@ -184,6 +232,57 @@ export function isReactionRecommendation(value: unknown): value is ReactionRecom
   return value === "reply" || value === "quote idea" || value === "save for later" || value === "skip";
 }
 
+const COMMENT_BAIT_PATTERNS: RegExp[] = [
+  /\b(comment|like|rt|retweet|quote|share)\b[\s\S]{0,40}\b(if|yes|below|for a|for an)\b/i,
+  /\b(drop|leave|put)\b[\s\S]{0,24}\b(a |an |your )?(🔥|❤️|💯|emoji|comment|like)\b/i,
+  /\btag (a |someone|somebody|a friend)\b/i,
+  /\b(i'?ll|i will)\b[\s\S]{0,48}\b(follow|dm|send|give)\b[\s\S]{0,40}\b(comment|like|rt|retweet)\b/i,
+  /\b(follow|like|rt|retweet)\b[\s\S]{0,24}(and|&)[\s\S]{0,24}\b(comment|like|rt|retweet)\b/i,
+  /\b(this (post )?will flop|only real ones|real ones (will|comment)|prove me wrong)\b/i,
+  /\b(rate (this|it)|score (this|it)|1\s*[-–to]+\s*10)\b/i,
+  /\bfill in the blank\b/i,
+  /\bwho( '?s| is)? (with me|else (thinks|agrees|feels))\b/i,
+  /\bagree or disagree\b/i,
+  /\b(comment|reply) (below|your|with)\b/i,
+  /\bthoughts\??\s*$/i
+];
+
+/** Detects reply-harvesting / comment-bait posts that high-intent reply flows should skip. */
+export function looksLikeCommentBait(text: string): boolean {
+  const normalized = text.trim().replace(/\s+/g, " ");
+  if (!normalized) return false;
+  if (COMMENT_BAIT_PATTERNS.some((pattern) => pattern.test(normalized))) return true;
+  const lower = normalized.toLowerCase();
+  if (lower.length > 140) return false;
+  return /^(who else|anyone else|am i the only|thoughts\??|agree\??|yes or no|y\/n)\b/.test(lower)
+    || /\b(yes or no|y\/n)\??\s*$/.test(lower);
+}
+
+/** Force comment-bait posts to skip so high-intent reply queues never draft into them. */
+export function suppressCommentBaitScores(
+  rankedPosts: ScoredPost[],
+  posts: Array<Pick<SourcePost, "id" | "text">>
+): ScoredPost[] {
+  const textById = new Map(
+    posts
+      .filter((post): post is SourcePost & { id: string } => typeof post.id === "string" && post.id.trim().length > 0)
+      .map((post) => [post.id.trim(), post.text])
+  );
+  return rankedPosts.map((ranked) => {
+    const postText = textById.get(ranked.id);
+    if (!postText || !looksLikeCommentBait(postText)) return ranked;
+    return {
+      ...ranked,
+      score: Math.min(ranked.score, 25),
+      recommendation: "skip" as const,
+      reason: /comment bait/i.test(ranked.reason)
+        ? ranked.reason
+        : `Comment bait — skip high-intent reply. ${ranked.reason}`,
+      risks: [...new Set([...(ranked.risks ?? []), "comment_bait"])]
+    };
+  });
+}
+
 export function validateDraftResponse(value: unknown): DraftResponse {
   if (!isObject(value) || !Array.isArray(value.suggestions)) {
     throw new Error("Draft response must include suggestions array.");
@@ -197,7 +296,14 @@ export function validateDraftResponse(value: unknown): DraftResponse {
     const rationale = stringField(item, "rationale");
     const confidence = numberField(item, "confidence", 0.1, 1);
     const id = typeof item.id === "string" && item.id.trim() ? item.id : cryptoRandomId();
-    return { id, text, rationale, confidence };
+    return {
+      id,
+      text,
+      rationale,
+      confidence,
+      ...(typeof item.strategy === "string" ? { strategy: item.strategy } : {}),
+      ...(typeof item.isQuestion === "boolean" ? { isQuestion: item.isQuestion } : {})
+    };
   });
 
   const suggestions = parsedSuggestions.filter((candidate, index, all) => all.findIndex((other) =>
@@ -219,6 +325,7 @@ export function validateDraftResponse(value: unknown): DraftResponse {
     : suggestions.slice(1, 5);
   return {
     suggestions,
+    ...(typeof value.recommendedId === "string" ? { recommendedId: value.recommendedId } : recommendation ? { recommendedId: recommendation.id } : {}),
     ...(recommendation ? { recommendation } : {}),
     ...(explore ? { explore } : {})
   };
@@ -239,7 +346,9 @@ function parseDraftSuggestion(item: Record<string, unknown>, index: number): Dra
     id: typeof item.id === "string" && item.id.trim() ? item.id : cryptoRandomId(),
     text: stringField(item, "text"),
     rationale: stringField(item, "rationale"),
-    confidence: numberField(item, "confidence", 0.1, 1)
+    confidence: numberField(item, "confidence", 0.1, 1),
+    ...(typeof item.strategy === "string" ? { strategy: item.strategy } : {}),
+    ...(typeof item.isQuestion === "boolean" ? { isQuestion: item.isQuestion } : {})
   };
 }
 

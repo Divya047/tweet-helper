@@ -1,7 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import type { ContentKind, FeedbackDecision, Outcome, OutcomeKind, SourcePost, WorkItem, WorkItemStatus, WorkSession, WorkSessionStatus } from "@tweet-helper/shared";
+import type { ContentKind, FeedbackDecision, Outcome, OutcomeKind, OutcomePlatform, SourcePost, WorkItem, WorkItemStatus, WorkSession, WorkSessionStatus } from "@tweet-helper/shared";
 
 export interface WritingExampleInput {
   id: string;
@@ -164,6 +164,15 @@ export function migrate(db: AppDatabase): void {
     CREATE INDEX IF NOT EXISTS work_items_session_position ON work_items(session_id, position);
     CREATE INDEX IF NOT EXISTS outcomes_created_kind ON outcomes(created_at, kind);
   `);
+  ensureColumn(db, "outcomes", "platform", "TEXT");
+  ensureColumn(db, "outcomes", "context_json", "TEXT");
+}
+
+function ensureColumn(db: AppDatabase, table: string, column: string, definition: string): void {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+  if (!columns.some((item) => item.name === column)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  }
 }
 
 export function createWorkSession(db: AppDatabase, input: { title?: string; softGoal?: number } = {}): WorkSession {
@@ -215,6 +224,30 @@ export function listWorkItems(db: AppDatabase, sessionId: string): WorkItem[] {
   return rows.map(rowToWorkItem);
 }
 
+export function getWorkItem(db: AppDatabase, id: string): WorkItem | undefined {
+  const row = db.prepare(`SELECT id,session_id as sessionId,position,source_post_json as sourcePostJson,status,recommendation,score,draft_response_json as draftResponseJson,created_at as createdAt,updated_at as updatedAt FROM work_items WHERE id=?`).get(id) as Record<string, unknown> | undefined;
+  return row ? rowToWorkItem(row) : undefined;
+}
+
+export function getOutcomeByIdempotencyKey(db: AppDatabase, idempotencyKey: string): Outcome | undefined {
+  const row = db.prepare(`SELECT id,work_item_id as workItemId,kind,idempotency_key as idempotencyKey,text,external_id as externalId,platform,context_json as contextJson,created_at as createdAt FROM outcomes WHERE idempotency_key=?`).get(idempotencyKey) as Record<string, unknown> | undefined;
+  return row ? rowToOutcome(row) : undefined;
+}
+
+export function ensureCapturedWorkItem(db: AppDatabase, input: { workItemId?: string; sessionId?: string; sourcePost: SourcePost }): WorkItem {
+  if (input.workItemId) {
+    const existing = getWorkItem(db, input.workItemId);
+    if (existing) return existing;
+  }
+  let session = input.sessionId ? getWorkSession(db, input.sessionId) : undefined;
+  if (!session) {
+    const row = db.prepare(`SELECT id FROM work_sessions WHERE title='Captured activity' AND status='active' ORDER BY updated_at DESC LIMIT 1`).get() as { id: string } | undefined;
+    session = row ? getWorkSession(db, row.id) : createWorkSession(db, { title: "Captured activity", softGoal: 32 });
+  }
+  const items = appendWorkItems(db, session!.id, [input.sourcePost]);
+  return items[items.length - 1]!;
+}
+
 export function updateWorkItem(db: AppDatabase, id: string, input: { status?: WorkItemStatus; recommendation?: string; score?: number; draftResponse?: unknown }): WorkItem | undefined {
   const currentRow = db.prepare(`SELECT id,session_id as sessionId,position,source_post_json as sourcePostJson,status,recommendation,score,draft_response_json as draftResponseJson,created_at as createdAt,updated_at as updatedAt FROM work_items WHERE id=?`).get(id) as Record<string, unknown> | undefined;
   if (!currentRow) return undefined;
@@ -227,33 +260,48 @@ export function updateWorkItem(db: AppDatabase, id: string, input: { status?: Wo
   return rowToWorkItem(db.prepare(`SELECT id,session_id as sessionId,position,source_post_json as sourcePostJson,status,recommendation,score,draft_response_json as draftResponseJson,created_at as createdAt,updated_at as updatedAt FROM work_items WHERE id=?`).get(id) as Record<string, unknown>);
 }
 
-export function saveOutcome(db: AppDatabase, input: { workItemId: string; kind: OutcomeKind; idempotencyKey: string; text?: string; externalId?: string }): { outcome: Outcome; created: boolean } {
+export function saveOutcome(db: AppDatabase, input: { workItemId: string; kind: OutcomeKind; idempotencyKey: string; text?: string; externalId?: string; platform?: OutcomePlatform; context?: Record<string, unknown>; contentKind?: "post" | "reply" }): { outcome: Outcome; created: boolean } {
   const now = new Date().toISOString();
   const id = crypto.randomUUID();
-  const result = db.prepare(`INSERT OR IGNORE INTO outcomes(id,work_item_id,kind,idempotency_key,text,external_id,created_at) VALUES(?,?,?,?,?,?,?)`)
-    .run(id,input.workItemId,input.kind,input.idempotencyKey,input.text ?? null,input.externalId ?? null,now);
-  const row = db.prepare(`SELECT id,work_item_id as workItemId,kind,idempotency_key as idempotencyKey,text,external_id as externalId,created_at as createdAt FROM outcomes WHERE idempotency_key=? OR (work_item_id=? AND kind=?) LIMIT 1`).get(input.idempotencyKey,input.workItemId,input.kind) as unknown as Outcome;
-  if (result.changes) updateWorkItem(db,input.workItemId,{status: input.kind});
-  return { outcome: cleanOutcome(row), created: result.changes > 0 };
+  const result = db.prepare(`INSERT OR IGNORE INTO outcomes(id,work_item_id,kind,idempotency_key,text,external_id,platform,context_json,created_at) VALUES(?,?,?,?,?,?,?,?,?)`)
+    .run(id,input.workItemId,input.kind,input.idempotencyKey,input.text ?? null,input.externalId ?? null,input.platform ?? null,input.context ? JSON.stringify(input.context) : null,now);
+  const row = db.prepare(`SELECT id,work_item_id as workItemId,kind,idempotency_key as idempotencyKey,text,external_id as externalId,platform,context_json as contextJson,created_at as createdAt FROM outcomes WHERE idempotency_key=? OR (work_item_id=? AND kind=?) LIMIT 1`).get(input.idempotencyKey,input.workItemId,input.kind) as Record<string, unknown>;
+  if (result.changes) {
+    updateWorkItem(db,input.workItemId,{status: input.kind});
+    if (input.text?.trim()) {
+      const item = getWorkItem(db, input.workItemId);
+      const isReply = input.contentKind === "reply" || Boolean(item?.sourcePost.author || item?.sourcePost.url || item?.sourcePost.parentPost || item?.sourcePost.quotedPost);
+      upsertWritingExamples(db, [{
+        id: `outcome:${input.workItemId}`,
+        kind: isReply ? "comment" : "post",
+        text: input.text.trim(),
+        source: "outcome",
+        ...(isReply && item?.sourcePost.author ? { replyToUser: item.sourcePost.author } : {})
+      }]);
+    }
+  }
+  return { outcome: rowToOutcome(row), created: result.changes > 0 };
 }
 
 export function getTodayProgress(db: AppDatabase, now = new Date()): { date: string; used: number; published: number; completed: number; softGoal: number; remaining: number } {
   const date = now.toISOString().slice(0,10);
   const since = `${date}T00:00:00.000Z`;
-  const counts = db.prepare(`SELECT SUM(kind='used') as used,SUM(kind='published') as published,COUNT(*) as completed FROM outcomes WHERE created_at>=?`).get(since) as { used: number|null; published:number|null; completed:number };
+  const counts = db.prepare(`SELECT SUM(kind='used') as used,SUM(kind='published') as published,COUNT(DISTINCT work_item_id) as completed FROM outcomes WHERE created_at>=?`).get(since) as { used: number|null; published:number|null; completed:number };
   const goal = db.prepare(`SELECT COALESCE(MAX(soft_goal),8) as softGoal FROM work_sessions WHERE status='active'`).get() as { softGoal:number };
   return { date, used: counts.used ?? 0, published: counts.published ?? 0, completed: counts.completed ?? 0, softGoal: goal.softGoal, remaining: Math.max(0,goal.softGoal-(counts.completed ?? 0)) };
 }
 
 export function reconcileArchiveOutcomes(db: AppDatabase, examples: WritingExampleInput[]): number {
   let reconciled = 0;
-  const candidates=db.prepare(`SELECT wi.id,wi.draft_response_json as draftResponseJson FROM work_items wi LEFT JOIN outcomes o ON o.work_item_id=wi.id AND o.kind='published' WHERE o.id IS NULL AND wi.draft_response_json IS NOT NULL ORDER BY wi.updated_at DESC`).all() as Array<{id:string;draftResponseJson:string}>;
+  const candidates=db.prepare(`SELECT wi.id,used.text as usedText,wi.draft_response_json as draftResponseJson FROM work_items wi JOIN outcomes used ON used.work_item_id=wi.id AND used.kind='used' LEFT JOIN outcomes published ON published.work_item_id=wi.id AND published.kind='published' WHERE published.id IS NULL ORDER BY wi.updated_at DESC`).all() as Array<{id:string;usedText:string|null;draftResponseJson:string|null}>;
   for (const example of examples) {
     const normalized = normalizeForStorage(example.text);
     const item = candidates.find((candidate) => {
       try {
+        if (candidate.usedText && normalizeForStorage(candidate.usedText) === normalized) return true;
+        if (!candidate.draftResponseJson) return false;
         const draft=JSON.parse(candidate.draftResponseJson) as {suggestions?:Array<{text?:string}>};
-        return draft.suggestions?.some((suggestion)=>typeof suggestion.text === "string" && normalizeForStorage(suggestion.text) === normalized);
+        return draft.suggestions?.some((suggestion)=>typeof suggestion.text === "string" && normalizeForStorage(suggestion.text) === normalized) ?? false;
       } catch { return false; }
     });
     if (item) {
@@ -271,7 +319,19 @@ function rowToWorkItem(row: Record<string, unknown>): WorkItem {
     ...(row.draftResponseJson ? {draftResponse:JSON.parse(String(row.draftResponseJson))}:{}),createdAt:String(row.createdAt),updatedAt:String(row.updatedAt) };
 }
 function cleanSession(row: WorkSession): WorkSession { const { archivedAt, ...rest }=row; return archivedAt ? row : rest; }
-function cleanOutcome(row: Outcome): Outcome { const {text,externalId,...rest}=row; return {...rest,...(text?{text}:{}),...(externalId?{externalId}:{})}; }
+function rowToOutcome(row: Record<string, unknown>): Outcome {
+  return {
+    id: String(row.id),
+    workItemId: String(row.workItemId),
+    kind: row.kind as OutcomeKind,
+    idempotencyKey: String(row.idempotencyKey),
+    ...(typeof row.text === "string" ? { text: row.text } : {}),
+    ...(typeof row.externalId === "string" ? { externalId: row.externalId } : {}),
+    ...(row.platform === "chrome" || row.platform === "ios" ? { platform: row.platform } : {}),
+    ...(typeof row.contextJson === "string" ? { context: JSON.parse(row.contextJson) as Record<string, unknown> } : {}),
+    createdAt: String(row.createdAt)
+  };
+}
 
 export function initializeSettings(db: AppDatabase, defaults: Record<string, unknown>): void {
   const stmt = db.prepare("INSERT OR IGNORE INTO settings(key, value, updated_at) VALUES (?, ?, ?)");
@@ -402,15 +462,24 @@ export function getSimilarExamples(
 export function getPairedReplyExamples(db: AppDatabase, sourceText: string, limit = 8): Array<{ sourceText: string; replyText: string }> {
   const terms = normalizeForStorage(sourceText).split(" ").filter((term) => term.length >= 4).slice(0, 4);
   if (!terms.length) return [];
+  const learnedOutcomes = db.prepare(`SELECT wi.source_post_json as sourcePostJson,o.text as replyText FROM outcomes o JOIN work_items wi ON wi.id=o.work_item_id WHERE o.text IS NOT NULL AND (json_extract(o.context_json,'$.contentKind')='reply' OR json_extract(wi.source_post_json,'$.url') IS NOT NULL OR json_extract(wi.source_post_json,'$.author') IS NOT NULL) ORDER BY o.created_at DESC LIMIT 200`).all() as Array<{sourcePostJson:string;replyText:string}>;
   const rows = db.prepare(`SELECT context_json as contextJson,final_text as replyText FROM feedback WHERE decision IN ('accepted','edited') AND final_text IS NOT NULL AND context_json IS NOT NULL ORDER BY created_at DESC LIMIT 200`).all() as Array<{contextJson:string;replyText:string}>;
-  return rows.flatMap((row) => {
+  const pairs = learnedOutcomes.flatMap((row) => {
+    try {
+      const pairedSource = (JSON.parse(row.sourcePostJson) as SourcePost).text;
+      if (!pairedSource || !terms.some((term) => normalizeForStorage(pairedSource).includes(term))) return [];
+      return [{ sourceText: pairedSource, replyText: row.replyText }];
+    } catch { return []; }
+  });
+  pairs.push(...rows.flatMap((row) => {
     try {
       const context = JSON.parse(row.contextJson) as { sourcePost?: SourcePost; sourceText?: string };
       const pairedSource = context.sourcePost?.text ?? context.sourceText;
       if (!pairedSource || !terms.some((term) => normalizeForStorage(pairedSource).includes(term))) return [];
       return [{sourceText:pairedSource,replyText:row.replyText}];
     } catch { return []; }
-  }).slice(0,limit);
+  }));
+  return pairs.filter((pair, index, all) => all.findIndex((candidate) => candidate.sourceText === pair.sourceText && candidate.replyText === pair.replyText) === index).slice(0,limit);
 }
 
 export function getStyleProfile(db: AppDatabase): string | undefined {

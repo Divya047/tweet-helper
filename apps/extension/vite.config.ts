@@ -1,17 +1,17 @@
 import { resolve } from "node:path";
 import { defineConfig } from "vite";
 
+/** Background (type: module) and side panel (script type=module) can share ES chunks. */
 export default defineConfig({
-  publicDir: "public",
+  publicDir: false,
   build: {
     outDir: "dist",
-    emptyOutDir: true,
+    emptyOutDir: false,
     sourcemap: true,
     rollupOptions: {
       input: {
-        content: resolve(__dirname, "src/content.ts"),
-        sidepanel: resolve(__dirname, "src/sidepanel.ts"),
-        background: resolve(__dirname, "src/background.ts")
+        background: resolve(__dirname, "src/background.ts"),
+        sidepanel: resolve(__dirname, "src/sidepanel.ts")
       },
       output: {
         entryFileNames: "[name].js",

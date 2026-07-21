@@ -75,12 +75,15 @@ async function requestJsonCompletion(
   model: string,
   request: JsonCompletionRequest
 ): Promise<Omit<JsonCompletionResult, "value">> {
-      const response = await fetch("https://api.together.ai/v1/chat/completions", {
+  let response: Response;
+  try {
+      response = await fetch("https://api.together.ai/v1/chat/completions", {
         method: "POST",
         headers: {
           Authorization: `Bearer ${apiKey}`,
           "Content-Type": "application/json"
         },
+        signal: AbortSignal.timeout(45_000),
         body: JSON.stringify({
           model,
           messages: request.messages,
@@ -95,6 +98,12 @@ async function requestJsonCompletion(
           }
         })
       });
+  } catch (error) {
+    if (error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError")) {
+      throw new Error("Together API timed out after 45s. Try again.");
+    }
+    throw error;
+  }
 
       const body = (await response.json().catch(() => null)) as TogetherResponse | null;
       if (!response.ok) {

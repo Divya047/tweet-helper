@@ -1,16 +1,26 @@
-import type { ApiEnvelope, DraftResponse } from "@tweet-helper/shared";
+import {
+  DEFAULT_GROWTH_PREFERENCES,
+  type ApiEnvelope,
+  type DraftResponse,
+  type GrowthPreferences
+} from "@tweet-helper/shared";
 import { postJson } from "./api.js";
 import type { ClientEvent, ComposerContext, ExtensionMessage, QueueItem } from "./contracts.js";
 import { stableId } from "./contracts.js";
-import { findComposers, getComposerContext, getComposerText, insertTextIntoComposer, isComposerElement } from "./dom.js";
+import { expandTruncatedPostText, extractVisiblePosts, findComposers, getComposerActionPlacement, getComposerContext, getComposerText, insertTextIntoComposer, isComposerElement } from "./dom.js";
 import { hasPublishSuccessEvidence, PublishTracker, statusIdFromUrl } from "./publish.js";
 
 const ACTION_CLASS = "tweet-helper-action";
+const GROWTH_STORAGE_KEY = "growthPreferences";
 const UNDO_MS = 10_000;
 const tracker = new PublishTracker();
 const undoHandlers = new WeakMap<HTMLButtonElement, () => void>();
 let focusedComposer: HTMLElement | undefined;
 let lastGenerated: { suggestionId: string; originalText: string; insertedText: string; context: ComposerContext } | undefined;
+let composerObserver: MutationObserver | undefined;
+let stopped = false;
+let enhancing = false;
+let enhanceAgain = false;
 
 if (location.hostname === "x.com" || location.hostname === "twitter.com") init();
 
@@ -23,7 +33,29 @@ function init(): void {
     void handleMessage(message).then(respond);
     return true;
   });
-  new MutationObserver(() => { enhanceComposers(); observeSuccess(); }).observe(document.documentElement, { childList: true, subtree: true });
+  composerObserver = new MutationObserver(() => { void enhanceComposers(); observeSuccess(); });
+  composerObserver.observe(document.documentElement, { childList: true, subtree: true });
+}
+
+function stopInvalidatedScript(): void {
+  if (stopped) return;
+  stopped = true;
+  composerObserver?.disconnect();
+  document.removeEventListener("focusin", rememberComposer, true);
+  document.removeEventListener("input", captureEdit, true);
+  document.removeEventListener("click", observeNativeSubmit, true);
+}
+
+async function sendRuntimeMessage<T = unknown>(message: ExtensionMessage): Promise<T | undefined> {
+  if (stopped) return undefined;
+  try {
+    return await chrome.runtime!.sendMessage(message) as T;
+  } catch (error) {
+    // Reloading an unpacked extension invalidates content scripts in existing tabs.
+    // Other transient messaging failures must not disable the composer enhancement.
+    if (String(error).toLowerCase().includes("extension context invalidated")) stopInvalidatedScript();
+    return undefined;
+  }
 }
 
 export function contextualAction(context: ComposerContext, hasActiveQueue: boolean): "Draft reply" | "Improve" | "Open brief" | "Insert next" {
@@ -33,47 +65,88 @@ export function contextualAction(context: ComposerContext, hasActiveQueue: boole
 }
 
 async function enhanceComposers(): Promise<void> {
-  const state = await chrome.runtime!.sendMessage({ type: "GET_STATE" } satisfies ExtensionMessage);
+  if (stopped) return;
+  if (enhancing) { enhanceAgain = true; return; }
+  enhancing = true;
+  const state = await sendRuntimeMessage<{ queue?: QueueItem[]; activeQueueItemId?: string }>({ type: "GET_STATE" });
+  if (stopped) { enhancing = false; return; }
   const active = state?.queue?.find((item: QueueItem) => item.id === state.activeQueueItemId) as QueueItem | undefined;
   for (const composer of findComposers()) {
-    const parent = composer.parentElement;
-    let button = parent?.querySelector<HTMLButtonElement>(`:scope > .${ACTION_CLASS}`);
-    if (!parent) continue;
+    const { host, before } = getComposerActionPlacement(composer);
+    const container = composer.closest<HTMLElement>('[role="dialog"], article[data-testid="tweet"], article') ?? composer.parentElement;
+    let button = host.querySelector<HTMLButtonElement>(`:scope > .${ACTION_CLASS}`)
+      ?? container?.querySelector<HTMLButtonElement>(`.${ACTION_CLASS}`);
     if (!button) {
       button = document.createElement("button"); button.type = "button"; button.className = ACTION_CLASS;
       button.setAttribute("aria-label", "Tweet Helper composer action");
       button.addEventListener("click", () => { const undo = undoHandlers.get(button!); if (undo) undo(); else void runAction(composer); });
-      parent.append(button);
     }
-    button.textContent = contextualAction(getComposerContext(composer), !!active);
+    if (button.parentElement !== host || (before && button.nextElementSibling !== before)) host.insertBefore(button, before ?? null);
+    const label = contextualAction(getComposerContext(composer), !!active);
+    if (button.textContent !== label) button.textContent = label;
     Object.assign(button.style, {
-      minWidth: "44px", minHeight: "44px", padding: "0 16px", marginTop: "8px", border: "2px solid currentColor",
+      minWidth: "44px", minHeight: "36px", padding: "0 16px", margin: "0 8px 0 0", border: "1px solid currentColor",
       borderRadius: "999px", background: "Canvas", color: "CanvasText", font: "700 14px system-ui", cursor: "pointer",
-      position: "relative", zIndex: "1", outlineOffset: "3px", maxWidth: "100%"
+      position: "relative", zIndex: "1", outlineOffset: "3px", maxWidth: "100%", flexShrink: "0"
     });
   }
+  enhancing = false;
+  if (enhanceAgain) { enhanceAgain = false; void enhanceComposers(); }
 }
 
 async function runAction(composer: HTMLElement): Promise<void> {
   focusedComposer = composer;
-  const state = await chrome.runtime!.sendMessage({ type: "GET_STATE" } satisfies ExtensionMessage);
+  const state = await sendRuntimeMessage<{ queue?: QueueItem[]; activeQueueItemId?: string }>({ type: "GET_STATE" });
   const active = state?.queue?.find((item: QueueItem) => item.id === state.activeQueueItemId) as QueueItem | undefined;
   if (active) return insertDraft(composer, active.draft.id, active.draft.text, active.context);
+  await expandTruncatedPostText(composer.closest<HTMLElement>('[role="dialog"], article[data-testid="tweet"], article') ?? document);
   const context = getComposerContext(composer);
   if (context.kind === "post" && !context.currentText) {
     composer.focus();
-    await chrome.runtime!.sendMessage({ type: "OPEN_SIDE_PANEL" } satisfies ExtensionMessage);
+    await sendRuntimeMessage({ type: "OPEN_SIDE_PANEL" });
     return;
   }
   await generateAndInsert(composer, context);
 }
 
 async function generateAndInsert(composer: HTMLElement, context: ComposerContext): Promise<void> {
+  const growth = await loadGrowthPreferences();
   const response = context.currentText
-    ? await postJson<ApiEnvelope<DraftResponse>>("/api/generate/rewrite", { text: context.currentText, kind: context.kind === "reply" ? "comment" : "post" })
-    : await postJson<ApiEnvelope<DraftResponse>>("/api/generate/comment", { sourcePost: context.target, angle: "" });
+    ? await postJson<ApiEnvelope<DraftResponse>>("/api/generate/rewrite", {
+        text: context.currentText,
+        kind: context.kind === "reply" ? "comment" : "post",
+        instructions: `Desired response: ${growth.outcome}. Write for ${growth.audience}.`
+      })
+    : await postJson<ApiEnvelope<DraftResponse>>("/api/generate/comment", {
+        sourcePost: context.target ? {
+          ...context.target,
+          ...(context.parent ? { parentPost: context.parent } : {}),
+          ...(context.quoted ? { quotedPost: context.quoted } : {})
+        } : undefined,
+        angle: "",
+        audience: growth.audience,
+        contentPillar: growth.pillar,
+        desiredOutcome: growth.outcome,
+        instructions: `Add a complete, useful thought that signals peer expertise. Prefer a practical detail, implication, counterexample, tradeoff, or reasoned question over generic agreement.\nDesired response: ${growth.outcome}.`
+      });
   const draft = response.data.suggestions[0];
   if (draft) insertDraft(composer, draft.id, draft.text, context);
+}
+
+async function loadGrowthPreferences(): Promise<GrowthPreferences> {
+  try {
+    const stored = await chrome.storage!.local!.get(GROWTH_STORAGE_KEY);
+    const value = stored[GROWTH_STORAGE_KEY];
+    if (!value || typeof value !== "object") return { ...DEFAULT_GROWTH_PREFERENCES };
+    const record = value as Record<string, unknown>;
+    return {
+      audience: typeof record.audience === "string" && record.audience.trim() ? record.audience.trim() : DEFAULT_GROWTH_PREFERENCES.audience,
+      pillar: typeof record.pillar === "string" && record.pillar.trim() ? record.pillar.trim() : DEFAULT_GROWTH_PREFERENCES.pillar,
+      outcome: typeof record.outcome === "string" && record.outcome.trim() ? record.outcome.trim() : DEFAULT_GROWTH_PREFERENCES.outcome
+    };
+  } catch {
+    return { ...DEFAULT_GROWTH_PREFERENCES };
+  }
 }
 
 function insertDraft(composer: HTMLElement, suggestionId: string, text: string, context: ComposerContext): void {
@@ -91,7 +164,7 @@ export function replaceWithUndo(composer: HTMLElement, text: string): () => void
 }
 
 function showUndo(composer: HTMLElement, originalText: string): void {
-  const button = composer.parentElement?.querySelector<HTMLButtonElement>(`.${ACTION_CLASS}`);
+  const button = getComposerActionPlacement(composer).host.querySelector<HTMLButtonElement>(`.${ACTION_CLASS}`);
   if (!button) return;
   const label = button.textContent; button.textContent = "Undo";
   const undo = () => { insertTextIntoComposer(composer, originalText); button.textContent = label ?? "Improve"; undoHandlers.delete(button); };
@@ -115,14 +188,17 @@ function observeNativeSubmit(event: MouseEvent): void {
 }
 function observeSuccess(): void {
   if (!tracker.pending || !hasPublishSuccessEvidence()) return;
-  const event = tracker.confirm(statusIdFromUrl(location.href)); if (event) void chrome.runtime!.sendMessage({ type: "RECORD_EVENT", event });
+  const event = tracker.confirm(statusIdFromUrl(location.href)); if (event) void sendRuntimeMessage({ type: "RECORD_EVENT", event });
 }
 function record(kind: ClientEvent["kind"], values: Omit<ClientEvent, "clientEventId" | "kind" | "occurredAt">): void {
-  void chrome.runtime!.sendMessage({ type: "RECORD_EVENT", event: { clientEventId: stableId(), kind, occurredAt: new Date().toISOString(), ...values } });
+  void sendRuntimeMessage({ type: "RECORD_EVENT", event: { clientEventId: stableId(), kind, occurredAt: new Date().toISOString(), ...values } });
 }
 async function handleMessage(message: ExtensionMessage): Promise<unknown> {
   if (message.type === "COMPOSER_CONTEXT") return focusedComposer ? getComposerContext(focusedComposer) : undefined;
   if (message.type === "INSERT_QUEUE_NEXT" && focusedComposer) return insertDraft(focusedComposer, message.item.draft.id, message.item.draft.text, message.item.context);
-  if (message.type === "SCAN_VISIBLE") return { ok: true };
+  if (message.type === "SCAN_VISIBLE") {
+    await expandTruncatedPostText(document, true);
+    return { posts: extractVisiblePosts() };
+  }
   return undefined;
 }
