@@ -6,7 +6,7 @@ import {
 } from "@tweet-helper/shared";
 import { postJson } from "./api.js";
 import type { ClientEvent, ComposerContext, ExtensionMessage, QueueItem } from "./contracts.js";
-import { stableId } from "./contracts.js";
+import { assignReplyTones, stableId } from "./contracts.js";
 import { expandTruncatedPostText, extractVisiblePosts, findComposers, getComposerActionPlacement, getComposerContext, getComposerText, insertTextIntoComposer, isComposerElement } from "./dom.js";
 import { hasPublishSuccessEvidence, PublishTracker, statusIdFromUrl } from "./publish.js";
 
@@ -127,7 +127,16 @@ async function generateAndInsert(composer: HTMLElement, context: ComposerContext
         audience: growth.audience,
         contentPillar: growth.pillar,
         desiredOutcome: growth.outcome,
-        instructions: `Add a complete, useful thought that signals peer expertise. Prefer a practical detail, implication, counterexample, tradeoff, or reasoned question over generic agreement.\nDesired response: ${growth.outcome}.`
+        instructions: (() => {
+          const tone = assignReplyTones(1)[0]!;
+          return [
+            `Reply tone for this draft: ${tone.label}.`,
+            tone.instruction,
+            "Signal peer expertise with a complete thought that stands alone.",
+            "Never invent facts, metrics, credentials, or personal experiences.",
+            `Desired response: ${growth.outcome}.`
+          ].join("\n");
+        })()
       });
   const draft = response.data.suggestions[0];
   if (draft) insertDraft(composer, draft.id, draft.text, context);

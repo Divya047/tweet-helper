@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import manifest from "../public/manifest.json";
 import { readFileSync } from "node:fs";
-import { BATCH_STRATEGIES, outcomePayloadForEvent } from "../src/contracts.js";
+import { BATCH_STRATEGIES, assignReplyTones, outcomePayloadForEvent, REPLY_TONES } from "../src/contracts.js";
 describe("MV3 side-panel and accessibility contracts", () => {
   it("uses a side panel and messaging-capable service worker without a popup", () => {
     expect(manifest.manifest_version).toBe(3); expect(manifest.side_panel.default_path).toBe("sidepanel.html"); expect(manifest.permissions).toContain("sidePanel"); expect(manifest.action).not.toHaveProperty("default_popup");
@@ -23,6 +23,24 @@ describe("MV3 side-panel and accessibility contracts", () => {
       "Peer recommendation",
       "Concise observation"
     ]);
+  });
+  it("assigns shuffled reply tones so queue drafts vary structure", () => {
+    expect(REPLY_TONES).toHaveLength(8);
+    expect(REPLY_TONES.map((tone) => tone.label)).toEqual([
+      "Practical caveat",
+      "Counterexample",
+      "Tradeoff callout",
+      "Implementation detail",
+      "Pattern observation",
+      "Constructive pushback",
+      "Reasoned question",
+      "Concise add-on"
+    ]);
+    const assigned = assignReplyTones(10);
+    expect(assigned).toHaveLength(10);
+    expect(new Set(assigned.slice(0, 8).map((tone) => tone.label)).size).toBe(8);
+    expect(assigned[8]?.label).toBe(assigned[0]?.label);
+    expect(assigned[9]?.label).toBe(assigned[1]?.label);
   });
   it("maps verified Chrome publishes to the durable outcome API contract", () => {
     expect(outcomePayloadForEvent({

@@ -36,6 +36,8 @@ describe("audience growth prompts", () => {
 
     expect(reply).toContain("complete thought that is useful even when read on its own");
     expect(reply).toContain("peer founder/builder expertise");
+    expect(reply).toContain("Never invent facts");
+    expect(reply).toContain("Do not default to anecdote openers");
     expect(reply).toContain("earn relevant follows");
     expect(scoring).toContain(DEFAULT_GROWTH_PREFERENCES.audience);
     expect(scoring).toContain("high metrics alone is not a reason");

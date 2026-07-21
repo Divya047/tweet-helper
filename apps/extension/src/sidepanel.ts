@@ -9,7 +9,7 @@ import {
 import { postJson } from "./api.js";
 import { activitySnapshot } from "./activity.js";
 import type { ComposerContext, Draft, ExtensionMessage, ExtensionState, QueueItem } from "./contracts.js";
-import { BATCH_STRATEGIES, stableId } from "./contracts.js";
+import { assignReplyTones, BATCH_STRATEGIES, stableId } from "./contracts.js";
 
 const GROWTH_STORAGE_KEY = "growthPreferences";
 
@@ -42,7 +42,7 @@ function renderToday(): void {
   app.innerHTML = `<h1>Today</h1><div class="goals"><div class="card goal"><span>Posts</span><strong>${snap.posts}<small> / ${snap.goals.posts}</small></strong><div class="bar"><i style="width:${snap.postProgress * 100}%"></i></div><span class="muted">Soft goal — keep going if it serves you.</span></div><div class="card goal"><span>Replies</span><strong>${snap.replies}<small> / ${snap.goals.replies}</small></strong><div class="bar"><i style="width:${snap.replyProgress * 100}%"></i></div><span class="muted">Soft goal — never a lockout.</span></div></div><div class="card"><strong>${state.queue.length} queued</strong><span class="muted">Queue and activity persist across tabs and panel reloads.</span></div>`;
 }
 function renderQueue(): void {
-  app.innerHTML = `<h1>Queue</h1><button id="queueReplies" class="primary">Queue visible replies</button><span class="muted">Scroll X and repeat to collect up to 24 reply drafts.</span>${state.queue.length ? state.queue.map((item, index) => `<article class="card"><strong>${index + 1}. ${escapeHtml(item.draft.text)}</strong><button data-insert="${item.id}" class="primary">Insert next</button><button data-remove="${item.id}">Skip</button></article>`).join("") : `<div class="card muted">No drafts queued. Build a post batch or collect visible replies.</div>`}`;
+  app.innerHTML = `<h1>Queue</h1><button id="queueReplies" class="primary">Queue visible replies</button><span class="muted">Scroll X and repeat to collect up to 24 reply drafts. Each draft uses a different reply tone.</span>${state.queue.length ? state.queue.map((item, index) => `<article class="card"><span class="strategy">${escapeHtml(item.draft.strategy ?? "Queued")}</span><strong>${index + 1}. ${escapeHtml(item.draft.text)}</strong><button data-insert="${item.id}" class="primary">Insert next</button><button data-remove="${item.id}">Skip</button></article>`).join("") : `<div class="card muted">No drafts queued. Build a post batch or collect visible replies.</div>`}`;
   document.getElementById("queueReplies")?.addEventListener("click", () => void queueVisibleReplies());
   app.querySelectorAll<HTMLButtonElement>("[data-insert]").forEach((button) => button.addEventListener("click", () => void insertQueue(button.dataset.insert!)));
   app.querySelectorAll<HTMLButtonElement>("[data-remove]").forEach((button) => button.addEventListener("click", () => void removeQueue(button.dataset.remove!)));
@@ -112,19 +112,42 @@ async function queueVisibleReplies(): Promise<void> {
     }).slice(0, remaining);
     if (!opportunities.length) return setStatus("No high-fit reply opportunities here. Scroll to a better conversation and scan again.");
     setStatus(`Drafting ${opportunities.length} high-fit, peer-value ${opportunities.length === 1 ? "reply" : "replies"}…`);
-    const results = await Promise.all(opportunities.map(({ post, score }, index) => postJson<ApiEnvelope<DraftResponse>>("/api/generate/comment", {
-      sourcePost: post,
-      angle: score.suggestedAngle,
-      audience: growth.audience,
-      contentPillar: growth.pillar,
-      desiredOutcome: growth.outcome,
-      model: "standard",
-      instructions: `Add a complete, useful thought that signals peer expertise. Prefer a practical detail, implication, counterexample, tradeoff, or reasoned question over generic agreement.\nDesired response: ${growth.outcome}.`,
-      regenerationSeed: `${state.sessionId}:reply:${post.id ?? index}`
-    })));
+    const tones = assignReplyTones(opportunities.length);
+    const results = await Promise.all(opportunities.map(({ post, score }, index) => {
+      const tone = tones[index]!;
+      return postJson<ApiEnvelope<DraftResponse>>("/api/generate/comment", {
+        sourcePost: post,
+        angle: score.suggestedAngle,
+        audience: growth.audience,
+        contentPillar: growth.pillar,
+        desiredOutcome: growth.outcome,
+        model: "standard",
+        instructions: [
+          `Reply tone for this draft: ${tone.label}.`,
+          tone.instruction,
+          "Signal peer expertise with a complete thought that stands alone.",
+          "Never invent facts, metrics, credentials, or personal experiences. If a story would require invention, use a different structure.",
+          `Desired response: ${growth.outcome}.`
+        ].join("\n"),
+        regenerationSeed: `${state.sessionId}:reply:${tone.label}:${post.id ?? index}`
+      });
+    }));
     results.forEach((result, index) => {
-      const suggestion = result.data.suggestions[0]; const opportunity = opportunities[index]; if (!suggestion || !opportunity) return;
-      state.queue.push({ id: stableId("queue"), draft: { id: suggestion.id, text: suggestion.text, strategy: `${opportunity.score.score}/100 · ${opportunity.score.suggestedAngle}`, recommended: true }, context: { kind: "reply", currentText: "", target: opportunity.post }, createdAt: Date.now() });
+      const suggestion = result.data.suggestions[0];
+      const opportunity = opportunities[index];
+      const tone = tones[index];
+      if (!suggestion || !opportunity || !tone) return;
+      state.queue.push({
+        id: stableId("queue"),
+        draft: {
+          id: suggestion.id,
+          text: suggestion.text,
+          strategy: `${opportunity.score.score}/100 · ${tone.label} · ${opportunity.score.suggestedAngle}`,
+          recommended: true
+        },
+        context: { kind: "reply", currentText: "", target: opportunity.post },
+        createdAt: Date.now()
+      });
     });
     if (!state.activeQueueItemId && state.queue[0]) state.activeQueueItemId = state.queue[0].id;
     await persist(); setStatus(`${opportunities.length} high-fit replies added. Review each before inserting.`); renderQueue();
