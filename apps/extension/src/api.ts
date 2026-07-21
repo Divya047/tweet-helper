@@ -1,4 +1,8 @@
 export const DEFAULT_BACKEND_URL = "http://127.0.0.1:4317";
+/** Default wait for normal backend calls. */
+export const DEFAULT_REQUEST_TIMEOUT_MS = 90_000;
+/** Score + draft flows can include a Together call and one JSON-repair retry. */
+export const LONG_REQUEST_TIMEOUT_MS = 180_000;
 
 export async function getBackendUrl(): Promise<string> {
   if (typeof chrome !== "undefined" && chrome?.storage?.local) {
@@ -14,15 +18,20 @@ export async function setBackendUrl(backendUrl: string): Promise<void> {
   }
 }
 
-export async function postJson<T>(path: string, body: unknown): Promise<T> {
+export async function postJson<T>(
+  path: string,
+  body: unknown,
+  options: { timeoutMs?: number } = {}
+): Promise<T> {
   const backendUrl = await getBackendUrl();
+  const timeoutMs = options.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
   let response: Response;
   try {
     response = await fetch(`${backendUrl}${path}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(60_000)
+      signal: AbortSignal.timeout(timeoutMs)
     });
   } catch (error) {
     if (error instanceof DOMException && error.name === "TimeoutError") {

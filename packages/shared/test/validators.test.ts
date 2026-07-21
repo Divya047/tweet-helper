@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_GROWTH_PREFERENCES,
+  enrichTopicSummaries,
   looksLikeCommentBait,
   suppressCommentBaitScores,
   validateDraftResponse,
@@ -37,6 +38,7 @@ describe("shared validators", () => {
         recommendation: "reply",
         reason: "Looks popular.",
         suggestedAngle: "Jump in.",
+        topicSummary: "Engagement farming prompt",
         risks: []
       }],
       [{ id: "bait", text: "Like if you agree. RT if you love this." }]
@@ -45,6 +47,21 @@ describe("shared validators", () => {
     expect(suppressed[0]?.recommendation).toBe("skip");
     expect(suppressed[0]?.score).toBeLessThanOrEqual(25);
     expect(suppressed[0]?.risks).toContain("comment_bait");
+  });
+
+  it("fills missing topic summaries from source post text", () => {
+    const enriched = enrichTopicSummaries(
+      [{
+        id: "1",
+        score: 80,
+        recommendation: "reply",
+        reason: "Fit",
+        suggestedAngle: "Add a caveat",
+        risks: []
+      }],
+      [{ id: "1", text: "Local software should make privacy the default for every user." }]
+    );
+    expect(enriched[0]?.topicSummary).toContain("Local software should make privacy");
   });
 
   it("rejects an invalid reaction recommendation", () => {
@@ -57,6 +74,7 @@ describe("shared validators", () => {
             recommendation: "auto reply",
             reason: "Bad",
             suggestedAngle: "No",
+            topicSummary: "Invalid recommendation case",
             risks: []
           }
         ]

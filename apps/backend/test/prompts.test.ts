@@ -46,5 +46,7 @@ describe("audience growth prompts", () => {
     expect(scoring).toContain("author/audience overlap with target niche");
     expect(scoring).toContain("alignment with desiredOutcome");
     expect(scoring).toContain("Prefer posts from builders, founders, and engineers");
+    expect(scoring).toContain("topicSummary");
+    expect(scoring).toContain("max 12 words");
   });
 });

@@ -12,7 +12,14 @@ export interface ComposerContext {
   quoted?: PostContext;
 }
 export interface Draft { id: string; text: string; strategy?: string; recommended?: boolean }
-export interface QueueItem { id: string; draft: Draft; context: ComposerContext; createdAt: number }
+export interface QueueItem {
+  id: string;
+  draft: Draft;
+  context: ComposerContext;
+  createdAt: number;
+  /** Ultra-short summary of the source post topic for fast queue review. */
+  sourceSummary?: string;
+}
 export interface ClientEvent {
   clientEventId: string;
   kind: EventKind;
@@ -37,9 +44,26 @@ export type ExtensionMessage =
   | { type: "COMPOSER_CONTEXT" }
   | { type: "GENERATE_AND_INSERT"; context: ComposerContext }
   | { type: "INSERT_QUEUE_NEXT"; item: QueueItem }
+  | { type: "OPEN_SOURCE_POST"; target: PostContext }
   | { type: "RECORD_EVENT"; event: ClientEvent }
   | { type: "OPEN_SIDE_PANEL" }
-  | { type: "SCAN_VISIBLE" };
+  | { type: "SCAN_VISIBLE" }
+  | { type: "COLLECT_FEED_POSTS"; excludeIds?: string[]; maxCandidates?: number; maxScrolls?: number };
+
+export const FIND_HIGH_INTENT = {
+  targetReplies: 8,
+  maxCandidates: 12,
+  maxScrolls: 8,
+  scrollPauseMs: 650,
+  stagnantLimit: 2,
+  minScore: 70
+} as const;
+
+export function sourcePostUrl(target?: PostContext): string | undefined {
+  if (target?.url?.includes("/status/")) return target.url;
+  if (target?.id && /^\d+$/.test(target.id)) return `https://x.com/i/status/${target.id}`;
+  return undefined;
+}
 
 export const BATCH_STRATEGIES = [
   { label: "Direct insight", instruction: "Lead with one crisp, useful insight founders or builders can apply. Do not ask a question.", question: false },

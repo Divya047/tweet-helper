@@ -6,6 +6,7 @@ import {
   DEFAULT_MODEL,
   estimateTokens,
   validateGenerateRewriteRequest,
+  enrichTopicSummaries,
   suppressCommentBaitScores,
   validateDraftResponse,
   validateScoreVisiblePostsResponse,
@@ -268,7 +269,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Bui
     }
     const sanitizedPosts = posts
       .filter((post) => typeof post.text === "string" && post.text.trim())
-      .slice(0, 24)
+      .slice(0, 16)
       .map((post, index) => ({
         ...post,
         id: post.id?.trim() || `visible-${index}`,
@@ -288,7 +289,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Bui
       db,
       sanitizedPosts.map((post) => post.text).join("\n"),
       "comment",
-      10
+      3
     );
     const messages = buildScoreMessages(body, styleProfile, examples);
     const response = await runCachedJsonGeneration({
@@ -300,15 +301,19 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Bui
         messages,
         schemaName: "ScoreVisiblePostsResponse",
         schema: scoreResponseSchema,
-        maxTokens: 1800,
-        temperature: 0.35
+        maxTokens: 1000,
+        temperature: 0.2,
+        timeoutMs: 90_000
       },
       validate: validateScoreVisiblePostsResponse
     });
     return {
       ...response,
       data: {
-        rankedPosts: suppressCommentBaitScores(response.data.rankedPosts, sanitizedPosts)
+        rankedPosts: enrichTopicSummaries(
+          suppressCommentBaitScores(response.data.rankedPosts, sanitizedPosts),
+          sanitizedPosts
+        )
       }
     };
   });

@@ -85,6 +85,7 @@ describe("backend routes", () => {
           recommendation: "reply",
           reason: "Strong topic fit.",
           suggestedAngle: "Add a practical caveat.",
+          topicSummary: "Privacy should be the default in local software",
           risks: []
         }
       ]
@@ -121,6 +122,7 @@ describe("backend routes", () => {
           recommendation: "reply",
           reason: "High engagement potential.",
           suggestedAngle: "Agree and ask a follow-up.",
+          topicSummary: "Ask for likes and tags",
           risks: []
         }
       ]

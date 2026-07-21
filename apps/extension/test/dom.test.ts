@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from "vitest";
-import { expandTruncatedPostText, extractVisiblePosts, findComposers, getComposerActionPlacement, getComposerContext, getNearestSourcePost, insertTextIntoComposer } from "../src/dom.js";
+import { expandTruncatedPostText, extractVisiblePosts, collectFeedPosts, findComposers, findTweetArticle, getComposerActionPlacement, getComposerContext, getNearestSourcePost, insertTextIntoComposer } from "../src/dom.js";
 
 describe("extension DOM helpers", () => {
   it("clicks X show-more controls before extracting post text", async () => {
@@ -33,6 +33,56 @@ describe("extension DOM helpers", () => {
       author: "alice",
       text: "Local tools should keep the human in the loop."
     });
+  });
+
+  it("finds a tweet article by status id for open-post navigation", () => {
+    document.body.innerHTML = `
+      <article data-testid="tweet" id="a">
+        <a href="/alice">Alice</a>
+        <div data-testid="tweetText">First post that is long enough to matter here.</div>
+        <a href="/alice/status/111">time</a>
+      </article>
+      <article data-testid="tweet" id="b">
+        <a href="/bob">Bob</a>
+        <div data-testid="tweetText">Second post that is long enough to matter here.</div>
+        <a href="/bob/status/222">time</a>
+      </article>
+    `;
+
+    const found = findTweetArticle(document, { id: "222", text: "unused" });
+    expect(found?.id).toBe("b");
+  });
+
+  it("collects posts across mocked feed scrolls until the candidate cap", async () => {
+    const pages = [
+      `<article data-testid="tweet"><a href="/a1">A</a><div data-testid="tweetText">First visible post that is long enough.</div><a href="/a1/status/1">t</a></article>
+       <article data-testid="tweet"><a href="/a2">A</a><div data-testid="tweetText">Second visible post that is long enough.</div><a href="/a2/status/2">t</a></article>`,
+      `<article data-testid="tweet"><a href="/a3">A</a><div data-testid="tweetText">Third visible post that is long enough.</div><a href="/a3/status/3">t</a></article>
+       <article data-testid="tweet"><a href="/a4">A</a><div data-testid="tweetText">Fourth visible post that is long enough.</div><a href="/a4/status/4">t</a></article>`
+    ];
+    let page = 0;
+    const mount = (): void => {
+      document.body.innerHTML = pages[Math.min(page, pages.length - 1)]!;
+      for (const article of document.querySelectorAll("article")) {
+        vi.spyOn(article as HTMLElement, "getBoundingClientRect").mockReturnValue(createRect({ top: 20, bottom: 120 }));
+      }
+    };
+    mount();
+
+    const result = await collectFeedPosts({
+      maxCandidates: 4,
+      maxScrolls: 5,
+      pauseMs: 0,
+      stagnantLimit: 3,
+      wait: async () => undefined,
+      scroll: () => {
+        page += 1;
+        mount();
+      }
+    });
+
+    expect(result.posts.map((post) => post.id)).toEqual(["1", "2", "3", "4"]);
+    expect(result.scrolls).toBeGreaterThanOrEqual(1);
   });
 
   it("ignores posts left in the DOM outside the viewport", () => {

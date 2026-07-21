@@ -7,7 +7,7 @@ import {
 import { postJson } from "./api.js";
 import type { ClientEvent, ComposerContext, ExtensionMessage, QueueItem } from "./contracts.js";
 import { assignReplyTones, stableId } from "./contracts.js";
-import { expandTruncatedPostText, extractVisiblePosts, findComposers, getComposerActionPlacement, getComposerContext, getComposerText, insertTextIntoComposer, isComposerElement } from "./dom.js";
+import { expandTruncatedPostText, extractVisiblePosts, collectFeedPosts, findComposers, findTweetArticle, getComposerActionPlacement, getComposerContext, getComposerText, insertTextIntoComposer, isComposerElement } from "./dom.js";
 import { hasPublishSuccessEvidence, PublishTracker, statusIdFromUrl } from "./publish.js";
 
 const ACTION_CLASS = "tweet-helper-action";
@@ -205,9 +205,32 @@ function record(kind: ClientEvent["kind"], values: Omit<ClientEvent, "clientEven
 async function handleMessage(message: ExtensionMessage): Promise<unknown> {
   if (message.type === "COMPOSER_CONTEXT") return focusedComposer ? getComposerContext(focusedComposer) : undefined;
   if (message.type === "INSERT_QUEUE_NEXT" && focusedComposer) return insertDraft(focusedComposer, message.item.draft.id, message.item.draft.text, message.item.context);
+  if (message.type === "OPEN_SOURCE_POST") return openSourcePost(message.target);
   if (message.type === "SCAN_VISIBLE") {
     await expandTruncatedPostText(document, true);
     return { posts: extractVisiblePosts() };
   }
+  if (message.type === "COLLECT_FEED_POSTS") {
+    return collectFeedPosts({
+      excludeIds: message.excludeIds,
+      ...(message.maxCandidates !== undefined ? { maxCandidates: message.maxCandidates } : {}),
+      ...(message.maxScrolls !== undefined ? { maxScrolls: message.maxScrolls } : {})
+    });
+  }
   return undefined;
+}
+
+function openSourcePost(target: { id?: string; url?: string; text: string }): { found: boolean } {
+  const article = findTweetArticle(document, target);
+  if (!article) return { found: false };
+  article.scrollIntoView({ behavior: "smooth", block: "center" });
+  const previousOutline = article.style.outline;
+  const previousOutlineOffset = article.style.outlineOffset;
+  article.style.outline = "3px solid Highlight";
+  article.style.outlineOffset = "4px";
+  window.setTimeout(() => {
+    article.style.outline = previousOutline;
+    article.style.outlineOffset = previousOutlineOffset;
+  }, 2_000);
+  return { found: true };
 }

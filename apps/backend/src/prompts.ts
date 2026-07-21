@@ -174,7 +174,7 @@ export function buildRewriteMessages(
 
 export function buildScoreMessages(
   request: ScoreVisiblePostsRequest,
-  styleProfileJson: string | undefined,
+  _styleProfileJson: string | undefined,
   examples: WritingExample[]
 ): ChatMessage[] {
   const desiredOutcome = request.desiredOutcome ?? "earn relevant follows";
@@ -197,7 +197,11 @@ export function buildScoreMessages(
         "Treat as comment bait: like/comment/RT-if prompts, tag-someone asks, follow-for-follow or comment-to-get-DM hooks, fill-in-the-blank engagement farms, prove-me-wrong dunks with no substance, rate-this/1-10 asks, and posts whose main purpose is harvesting replies rather than sharing a useful idea.",
         "A thoughtful post that ends with one genuine question is not comment bait. Naked engagement questions and reply-harvesting posts are.",
         "Penalize ragebait, low-context posts, repetitive trends, and obvious promotional traps.",
-        "Return only valid JSON matching the schema."
+        "For each post, also write topicSummary: an ultra-short plain-language summary of what the post is about (max 12 words).",
+        "topicSummary must describe the subject matter only — not why to reply, not the score rationale, and not the author handle.",
+        "Keep reason and suggestedAngle under 12 words each. Prefer empty risks unless there is a clear spam/bait risk.",
+        "Do not include draftSeed unless it is under 12 words.",
+        "Return only valid JSON matching the schema. Be concise — ranking speed matters."
       ].join("\n")
     },
     {
@@ -205,12 +209,15 @@ export function buildScoreMessages(
       content: JSON.stringify(
         {
           task: "score_visible_posts",
-          visiblePosts: request.posts.slice(0, 24),
+          visiblePosts: request.posts.slice(0, 16).map((post) => ({
+            id: post.id,
+            ...(post.author ? { author: post.author } : {}),
+            text: truncateForScore(post.text)
+          })),
           targetAudience: request.audience ?? "the user's intended professional audience",
           contentPillar: request.contentPillar ?? "choose the strongest fit",
           desiredOutcome,
-          styleProfile: styleProfileJson ? JSON.parse(styleProfileJson) : null,
-          representativePastWriting: examples.map(formatExample).slice(0, 10),
+          representativePastWriting: examples.map(formatExample).slice(0, 3),
           scoringCriteria: [
             "relevance to user's usual topics",
             "likelihood the user can add a useful reply",
@@ -224,13 +231,19 @@ export function buildScoreMessages(
             "spam/ragebait risk",
             "comment-bait / reply-harvesting risk"
           ],
-          requiredOutput: "rank each input post with score, recommendation, reason, suggestedAngle, optional draftSeed, risks"
+          requiredOutput: "rank each input post with score, recommendation, reason, suggestedAngle, topicSummary, optional draftSeed, risks"
         },
         null,
         2
       )
     }
   ];
+}
+
+function truncateForScore(text: string, max = 280): string {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (normalized.length <= max) return normalized;
+  return `${normalized.slice(0, Math.max(0, max - 1)).trimEnd()}…`;
 }
 
 function formatExample(example: WritingExample): Pick<WritingExample, "kind" | "text" | "createdAt"> {

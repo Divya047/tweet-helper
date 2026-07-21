@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import manifest from "../public/manifest.json";
 import { readFileSync } from "node:fs";
-import { BATCH_STRATEGIES, assignReplyTones, outcomePayloadForEvent, REPLY_TONES } from "../src/contracts.js";
+import { BATCH_STRATEGIES, FIND_HIGH_INTENT, assignReplyTones, outcomePayloadForEvent, REPLY_TONES, sourcePostUrl } from "../src/contracts.js";
 describe("MV3 side-panel and accessibility contracts", () => {
   it("uses a side panel and messaging-capable service worker without a popup", () => {
     expect(manifest.manifest_version).toBe(3); expect(manifest.side_panel.default_path).toBe("sidepanel.html"); expect(manifest.permissions).toContain("sidePanel"); expect(manifest.action).not.toHaveProperty("default_popup");
@@ -47,5 +47,15 @@ describe("MV3 side-panel and accessibility contracts", () => {
       clientEventId:"chrome-1",kind:"published",occurredAt:new Date().toISOString(),finalText:"Final reply",externalId:"123",
       context:{kind:"reply",currentText:"Final reply",target:{text:"Source post",url:"https://x.com/a/status/1"}}
     })).toMatchObject({status:"published",platform:"chrome",finalText:"Final reply",sourceText:"Source post",clientEventId:"chrome-1",externalId:"123",contentKind:"reply"});
+  });
+  it("resolves a navigable source post URL from url or numeric id", () => {
+    expect(sourcePostUrl({ text: "hi", url: "https://x.com/a/status/99" })).toBe("https://x.com/a/status/99");
+    expect(sourcePostUrl({ id: "123456789", text: "hi" })).toBe("https://x.com/i/status/123456789");
+    expect(sourcePostUrl({ id: "visible-0", text: "hi" })).toBeUndefined();
+  });
+  it("targets eight high-intent replies from a capped feed collect", () => {
+    expect(FIND_HIGH_INTENT.targetReplies).toBe(8);
+    expect(FIND_HIGH_INTENT.maxCandidates).toBe(12);
+    expect(FIND_HIGH_INTENT.minScore).toBe(70);
   });
 });

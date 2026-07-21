@@ -16,6 +16,8 @@ export interface JsonCompletionRequest {
   maxTokens: number;
   temperature?: number;
   model?: string;
+  /** Per-request Together fetch timeout. Defaults to 60s. */
+  timeoutMs?: number;
 }
 
 export interface JsonCompletionResult {
@@ -75,6 +77,7 @@ async function requestJsonCompletion(
   model: string,
   request: JsonCompletionRequest
 ): Promise<Omit<JsonCompletionResult, "value">> {
+  const timeoutMs = request.timeoutMs ?? 60_000;
   let response: Response;
   try {
       response = await fetch("https://api.together.ai/v1/chat/completions", {
@@ -83,7 +86,7 @@ async function requestJsonCompletion(
           Authorization: `Bearer ${apiKey}`,
           "Content-Type": "application/json"
         },
-        signal: AbortSignal.timeout(45_000),
+        signal: AbortSignal.timeout(timeoutMs),
         body: JSON.stringify({
           model,
           messages: request.messages,
@@ -100,7 +103,7 @@ async function requestJsonCompletion(
       });
   } catch (error) {
     if (error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError")) {
-      throw new Error("Together API timed out after 45s. Try again.");
+      throw new Error(`Together API timed out after ${Math.round(timeoutMs / 1000)}s. Try again.`);
     }
     throw error;
   }
@@ -190,15 +193,17 @@ export const scoreResponseSchema = {
           id: { type: "string", minLength: 1 },
           score: { type: "number", minimum: 0, maximum: 100 },
           recommendation: { type: "string", enum: ["reply", "quote idea", "save for later", "skip"] },
-          reason: { type: "string", minLength: 1 },
-          suggestedAngle: { type: "string", minLength: 1 },
-          draftSeed: { type: "string" },
+          reason: { type: "string", minLength: 1, maxLength: 80 },
+          suggestedAngle: { type: "string", minLength: 1, maxLength: 80 },
+          topicSummary: { type: "string", minLength: 1, maxLength: 80 },
+          draftSeed: { type: "string", maxLength: 120 },
           risks: {
             type: "array",
-            items: { type: "string" }
+            maxItems: 2,
+            items: { type: "string", maxLength: 40 }
           }
         },
-        required: ["id", "score", "recommendation", "reason", "suggestedAngle", "risks"]
+        required: ["id", "score", "recommendation", "reason", "suggestedAngle", "topicSummary", "risks"]
       }
     }
   },

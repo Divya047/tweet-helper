@@ -182,6 +182,8 @@ export interface ScoredPost {
   recommendation: ReactionRecommendation;
   reason: string;
   suggestedAngle: string;
+  /** Ultra-short plain-language summary of what the post is about (for fast queue review). */
+  topicSummary?: string;
   draftSeed?: string;
   risks: string[];
 }
@@ -283,6 +285,25 @@ export function suppressCommentBaitScores(
   });
 }
 
+/** Fill missing topic summaries from source post text so queue cards never crash. */
+export function enrichTopicSummaries(
+  rankedPosts: ScoredPost[],
+  posts: Array<Pick<SourcePost, "id" | "text">>
+): ScoredPost[] {
+  const textById = new Map(
+    posts
+      .filter((post): post is SourcePost & { id: string } => typeof post.id === "string" && post.id.trim().length > 0)
+      .map((post) => [post.id.trim(), post.text])
+  );
+  return rankedPosts.map((ranked) => {
+    if (ranked.topicSummary?.trim()) return ranked;
+    const postText = textById.get(ranked.id)?.replace(/\s+/g, " ").trim();
+    if (!postText) return ranked;
+    const summary = postText.length <= 80 ? postText : `${postText.slice(0, 79).trimEnd()}…`;
+    return { ...ranked, topicSummary: summary };
+  });
+}
+
 export function validateDraftResponse(value: unknown): DraftResponse {
   if (!isObject(value) || !Array.isArray(value.suggestions)) {
     throw new Error("Draft response must include suggestions array.");
@@ -373,6 +394,9 @@ export function validateScoreVisiblePostsResponse(value: unknown): ScoreVisibleP
       suggestedAngle: stringField(item, "suggestedAngle"),
       risks: Array.isArray(item.risks) ? item.risks.filter((risk): risk is string => typeof risk === "string") : []
     };
+    if (typeof item.topicSummary === "string" && item.topicSummary.trim()) {
+      result.topicSummary = item.topicSummary.trim().slice(0, 120);
+    }
     if (typeof item.draftSeed === "string") {
       result.draftSeed = item.draftSeed;
     }

@@ -22,6 +22,77 @@ export async function expandTruncatedPostText(root: ParentNode = document, visib
   return candidates.length;
 }
 
+export function findTweetArticle(root: ParentNode, target: Pick<PostContext, "id" | "url" | "text">): HTMLElement | undefined {
+  const articles = [...root.querySelectorAll<HTMLElement>(TWEET_ARTICLE_SELECTOR)];
+  const statusId = (target.id && /^\d+$/.test(target.id) ? target.id : undefined) ?? extractStatusId(target.url);
+  if (statusId) {
+    const byId = articles.find((article) => extractStatusId(extractStatusUrl(article)) === statusId);
+    if (byId) return byId;
+  }
+  const needle = target.text?.replace(/\s+/g, " ").trim();
+  if (!needle) return undefined;
+  return articles.find((article) => extractPostText(article) === needle);
+}
+
+export type CollectFeedPostsOptions = {
+  root?: Document | HTMLElement;
+  excludeIds?: Iterable<string>;
+  maxCandidates?: number;
+  maxScrolls?: number;
+  pauseMs?: number;
+  stagnantLimit?: number;
+  scroll?: () => void;
+  wait?: (ms: number) => Promise<void>;
+};
+
+export async function collectFeedPosts(options: CollectFeedPostsOptions = {}): Promise<{ posts: VisiblePost[]; scrolls: number }> {
+  const root = options.root ?? document;
+  const exclude = new Set(options.excludeIds ?? []);
+  const maxCandidates = options.maxCandidates ?? 24;
+  const maxScrolls = options.maxScrolls ?? 10;
+  const pauseMs = options.pauseMs ?? 750;
+  const stagnantLimit = options.stagnantLimit ?? 2;
+  const scroll = options.scroll ?? defaultScrollFeed;
+  const wait = options.wait ?? ((ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms)));
+  const collected = new Map<string, VisiblePost>();
+  let scrolls = 0;
+  let stagnant = 0;
+
+  while (collected.size < maxCandidates && scrolls <= maxScrolls) {
+    await expandTruncatedPostText(root, true);
+    const before = collected.size;
+    for (const post of extractVisiblePosts(root)) {
+      const key = post.id || post.text;
+      if (!key || exclude.has(key) || exclude.has(post.text) || collected.has(key)) continue;
+      collected.set(key, { ...post, viewportIndex: collected.size });
+      if (collected.size >= maxCandidates) break;
+    }
+    if (collected.size >= maxCandidates) break;
+    if (scrolls >= maxScrolls) break;
+    if (collected.size === before) {
+      stagnant += 1;
+      if (stagnant >= stagnantLimit && scrolls > 0) break;
+    } else {
+      stagnant = 0;
+    }
+    scroll();
+    scrolls += 1;
+    await wait(pauseMs);
+  }
+
+  return { posts: [...collected.values()], scrolls };
+}
+
+function defaultScrollFeed(): void {
+  const amount = Math.round(Math.max(window.innerHeight * 0.9, 500));
+  const column = document.querySelector<HTMLElement>('[data-testid="primaryColumn"]');
+  if (column && column.scrollHeight > column.clientHeight + 40) {
+    column.scrollBy(0, amount);
+    return;
+  }
+  window.scrollBy(0, amount);
+}
+
 export function extractVisiblePosts(root: ParentNode = document): VisiblePost[] {
   const articles = [...root.querySelectorAll<HTMLElement>(TWEET_ARTICLE_SELECTOR)]
     .filter((article) => isInViewport(article))
