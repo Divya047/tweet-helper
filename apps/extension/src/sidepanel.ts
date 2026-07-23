@@ -11,7 +11,8 @@ import { LONG_REQUEST_TIMEOUT_MS, postJson } from "./api.js";
 import { activitySnapshot } from "./activity.js";
 import type { ComposerContext, Draft, ExtensionMessage, ExtensionState, FeedTrend, QueueItem } from "./contracts.js";
 import {
-  assignReplyTones,
+  assignReplyStyles,
+  buildReplyDraftInstructions,
   buildSingleTrendBrief,
   deriveFeedTrends,
   FIND_HIGH_INTENT,
@@ -281,10 +282,10 @@ async function findHighIntentReplies(): Promise<void> {
     }
 
     setStatus(`Drafting top ${opportunities.length} high-intent ${opportunities.length === 1 ? "reply" : "replies"}…`);
-    const tones = assignReplyTones(opportunities.length);
+    const styles = assignReplyStyles(opportunities.length);
     let drafted = 0;
     const results = await mapPool(opportunities, 3, async ({ post, score }, index) => {
-      const tone = tones[index]!;
+      const style = styles[index]!;
       const result = await postJson<ApiEnvelope<DraftResponse>>("/api/generate/comment", {
         sourcePost: post,
         angle: score.suggestedAngle,
@@ -293,14 +294,8 @@ async function findHighIntentReplies(): Promise<void> {
         desiredOutcome: growth.outcome,
         mode: "cheap",
         model: "standard",
-        instructions: [
-          `Reply tone for this draft: ${tone.label}.`,
-          tone.instruction,
-          "Signal peer expertise with a complete thought that stands alone.",
-          "Never invent facts, metrics, credentials, or personal experiences. If a story would require invention, use a different structure.",
-          `Desired response: ${growth.outcome}.`
-        ].join("\n"),
-        regenerationSeed: `${state.sessionId}:reply:${tone.label}:${post.id ?? index}`
+        instructions: buildReplyDraftInstructions(style, growth.outcome),
+        regenerationSeed: `${state.sessionId}:reply:${style.tone.label}:${style.voice.label}:${post.id ?? index}`
       }, { timeoutMs: LONG_REQUEST_TIMEOUT_MS });
       drafted += 1;
       setStatus(`Drafting replies… ${drafted}/${opportunities.length}`);
@@ -311,8 +306,8 @@ async function findHighIntentReplies(): Promise<void> {
     results.forEach((result, index) => {
       const suggestion = result.data.suggestions[0];
       const opportunity = opportunities[index];
-      const tone = tones[index];
-      if (!suggestion || !opportunity || !tone) return;
+      const style = styles[index];
+      if (!suggestion || !opportunity || !style) return;
       const sourceSummary =
         opportunity.score.topicSummary?.trim()
         || truncateText(opportunity.post.text, 80);
@@ -321,7 +316,7 @@ async function findHighIntentReplies(): Promise<void> {
         draft: {
           id: suggestion.id,
           text: suggestion.text,
-          strategy: `${opportunity.score.score}/100 · ${tone.label} · ${opportunity.score.suggestedAngle}`,
+          strategy: `${opportunity.score.score}/100 · ${style.tone.label} · ${style.voice.label} · ${opportunity.score.suggestedAngle}`,
           recommended: true
         },
         context: { kind: "reply", currentText: "", target: opportunity.post },

@@ -71,8 +71,8 @@ export type ExtensionMessage =
 
 export const FIND_HIGH_INTENT = {
   targetReplies: 8,
-  maxCandidates: 12,
-  maxScrolls: 8,
+  maxCandidates: 24,
+  maxScrolls: 16,
   scrollPauseMs: 650,
   stagnantLimit: 2,
   minScore: 70
@@ -253,16 +253,84 @@ export const REPLY_TONES = [
   }
 ] as const;
 
-/** Shuffle tones once per batch, then rotate — variety without repeating the same structure back-to-back. */
-export function assignReplyTones(count: number): Array<(typeof REPLY_TONES)[number]> {
-  const pool = [...REPLY_TONES];
+/** Distinct voice/rhythm registers so a batch does not share one polished AI cadence. */
+export const REPLY_VOICES = [
+  {
+    label: "Dry understated",
+    instruction: "Flat and underplayed. No hype, no softener, no applause. Prefer one plain sentence over a polished paragraph."
+  },
+  {
+    label: "Blunt direct",
+    instruction: "Short declarative sentences. Lead with the point; skip throat-clearing. Contractions are fine. Do not hedge with 'maybe' stacks."
+  },
+  {
+    label: "Curious peer",
+    instruction: "Sound like a sharp peer thinking out loud. Natural cadence, light uncertainty only where earned — not performative curiosity."
+  },
+  {
+    label: "Sparse clipped",
+    instruction: "Minimal wording. One tight claim, maybe a fragment. Cut filler words. Sound typed fast, not drafted."
+  },
+  {
+    label: "Slightly skeptical",
+    instruction: "Measured doubt or qualification without dunking or sarcasm piles. Keep respect; keep edge."
+  },
+  {
+    label: "Conversational",
+    instruction: "Peer-chat register: contractions, uneven sentence length, one informal turn of phrase if it fits. Still substantive — not chatty fluff."
+  },
+  {
+    label: "Technical precise",
+    instruction: "Exact wording, concrete nouns, process or systems language. No marketing gloss. Prefer specificity over punchiness."
+  },
+  {
+    label: "Quiet confident",
+    instruction: "Calm certainty without bravado. No exclamation, no hype adjectives. State the insight as if it is already obvious to practitioners."
+  }
+] as const;
+
+export type ReplyTone = (typeof REPLY_TONES)[number];
+export type ReplyVoice = (typeof REPLY_VOICES)[number];
+export type ReplyStyle = { tone: ReplyTone; voice: ReplyVoice };
+
+/** Shuffle once per batch, then rotate — structure and voice both vary without repeating the same pair back-to-back. */
+export function assignReplyStyles(count: number): ReplyStyle[] {
+  const tones = shuffleCopy(REPLY_TONES);
+  const voices = shuffleCopy(REPLY_VOICES);
+  return Array.from({ length: count }, (_, index) => ({
+    tone: tones[index % tones.length]!,
+    voice: voices[index % voices.length]!
+  }));
+}
+
+/** @deprecated Prefer assignReplyStyles — kept for callers that only need structure labels. */
+export function assignReplyTones(count: number): ReplyTone[] {
+  return assignReplyStyles(count).map((style) => style.tone);
+}
+
+/** Shared drafting instructions for queue finds and composer draft-reply. */
+export function buildReplyDraftInstructions(style: ReplyStyle, outcome: string): string {
+  return [
+    `Reply tone for this draft: ${style.tone.label}.`,
+    style.tone.instruction,
+    `Voice register for this draft: ${style.voice.label}.`,
+    style.voice.instruction,
+    "Signal peer expertise with a complete thought that stands alone.",
+    "Never invent facts, metrics, credentials, or personal experiences. If a story would require invention, use a different structure.",
+    "Do not use generic AI openers or stock parallel constructions; sound like a real peer typing on X.",
+    `Desired response: ${outcome}.`
+  ].join("\n");
+}
+
+function shuffleCopy<T>(items: readonly T[]): T[] {
+  const pool = [...items];
   for (let i = pool.length - 1; i > 0; i -= 1) {
     const j = Math.floor(Math.random() * (i + 1));
     const left = pool[i]!;
     pool[i] = pool[j]!;
     pool[j] = left;
   }
-  return Array.from({ length: count }, (_, index) => pool[index % pool.length]!);
+  return pool;
 }
 
 export function stableId(prefix = "evt"): string {

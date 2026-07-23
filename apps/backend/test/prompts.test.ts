@@ -39,6 +39,10 @@ describe("audience growth prompts", () => {
     expect(reply).toContain("Never invent facts");
     expect(reply).toContain("Do not default to anecdote openers");
     expect(reply).toContain("Do not default to counterexample");
+    expect(reply).toContain("voice register");
+    expect(reply).toContain("Great point");
+    expect(reply).toContain("It's not X, it's Y");
+    expect(reply).toContain("Sound like a specific person typing quickly on X");
     expect(reply).toContain(
       "Prefer replies that signal peer founder/builder expertise: an implementation detail, constraint, tradeoff, practical caveat, pattern, or well-reasoned question."
     );

@@ -4,12 +4,14 @@ import { readFileSync } from "node:fs";
 import {
   FIND_HIGH_INTENT,
   TREND_SCAN,
-  assignReplyTones,
+  assignReplyStyles,
+  buildReplyDraftInstructions,
   buildSingleTrendBrief,
   deriveFeedTrends,
   mapNativeExplore,
   outcomePayloadForEvent,
   REPLY_TONES,
+  REPLY_VOICES,
   samplePostsForScoring,
   sourcePostUrl
 } from "../src/contracts.js";
@@ -45,8 +47,9 @@ describe("MV3 side-panel and accessibility contracts", () => {
     expect(cards[0]).toMatchObject({ id: "r1", recommended: true, strategy: "Recommended" });
     expect(cards.slice(1).every((card) => !card.recommended)).toBe(true);
   });
-  it("assigns shuffled reply tones so queue drafts vary structure", () => {
+  it("assigns shuffled reply tones and voices so queue drafts vary structure and cadence", () => {
     expect(REPLY_TONES).toHaveLength(8);
+    expect(REPLY_VOICES).toHaveLength(8);
     expect(REPLY_TONES.map((tone) => tone.label)).toEqual([
       "Practical caveat",
       "Counterexample",
@@ -57,11 +60,28 @@ describe("MV3 side-panel and accessibility contracts", () => {
       "Reasoned question",
       "Concise add-on"
     ]);
-    const assigned = assignReplyTones(10);
+    expect(REPLY_VOICES.map((voice) => voice.label)).toEqual([
+      "Dry understated",
+      "Blunt direct",
+      "Curious peer",
+      "Sparse clipped",
+      "Slightly skeptical",
+      "Conversational",
+      "Technical precise",
+      "Quiet confident"
+    ]);
+    const assigned = assignReplyStyles(10);
     expect(assigned).toHaveLength(10);
-    expect(new Set(assigned.slice(0, 8).map((tone) => tone.label)).size).toBe(8);
-    expect(assigned[8]?.label).toBe(assigned[0]?.label);
-    expect(assigned[9]?.label).toBe(assigned[1]?.label);
+    expect(new Set(assigned.slice(0, 8).map((style) => style.tone.label)).size).toBe(8);
+    expect(new Set(assigned.slice(0, 8).map((style) => style.voice.label)).size).toBe(8);
+    expect(assigned[8]?.tone.label).toBe(assigned[0]?.tone.label);
+    expect(assigned[8]?.voice.label).toBe(assigned[0]?.voice.label);
+    expect(assigned[9]?.tone.label).toBe(assigned[1]?.tone.label);
+    expect(assigned[9]?.voice.label).toBe(assigned[1]?.voice.label);
+    const instructions = buildReplyDraftInstructions(assigned[0]!, "earn relevant follows");
+    expect(instructions).toContain(`Reply tone for this draft: ${assigned[0]!.tone.label}.`);
+    expect(instructions).toContain(`Voice register for this draft: ${assigned[0]!.voice.label}.`);
+    expect(instructions).toContain("generic AI openers");
   });
   it("maps verified Chrome publishes to the durable outcome API contract", () => {
     expect(outcomePayloadForEvent({
@@ -76,7 +96,8 @@ describe("MV3 side-panel and accessibility contracts", () => {
   });
   it("targets eight high-intent replies from a capped feed collect", () => {
     expect(FIND_HIGH_INTENT.targetReplies).toBe(8);
-    expect(FIND_HIGH_INTENT.maxCandidates).toBe(12);
+    expect(FIND_HIGH_INTENT.maxCandidates).toBe(24);
+    expect(FIND_HIGH_INTENT.maxScrolls).toBe(16);
     expect(FIND_HIGH_INTENT.minScore).toBe(70);
   });
   it("defines a long trend scan budget and clusters scored topic summaries", () => {
