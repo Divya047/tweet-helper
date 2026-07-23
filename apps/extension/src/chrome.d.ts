@@ -8,6 +8,7 @@ declare const chrome: {
   tabs?: {
     query?(query: { active?: boolean; currentWindow?: boolean }): Promise<Array<{ id?: number }>>;
     sendMessage?(tabId: number, message: unknown): Promise<any>;
+    update?(tabId: number, update: { url?: string }): Promise<unknown>;
   };
   sidePanel?: {
     setPanelBehavior?(options: { openPanelOnActionClick: boolean }): Promise<void>;

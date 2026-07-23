@@ -21,6 +21,10 @@ main{padding:16px;display:grid;gap:14px;overflow-wrap:anywhere}
 .primary{background:CanvasText;color:Canvas}
 .recommended{border:2px solid Highlight}
 .strategy{font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:Highlight}
+.section-title{margin:4px 0 0;font-size:14px}
+.explore-actions{display:grid;gap:8px}
+.trend-list{display:flex;flex-wrap:wrap;gap:8px}
+.trend-chip{display:inline-flex;align-items:center;min-height:32px;padding:4px 10px;border-radius:999px;background:color-mix(in srgb,Highlight 14%,Canvas);color:CanvasText;font-size:12px;font-weight:650}
 .source{padding:10px;border-radius:10px;background:color-mix(in srgb,CanvasText 6%,Canvas);display:grid;gap:4px}
 .source p{margin:0;color:color-mix(in srgb,CanvasText 80%,transparent)}
 .actions{display:grid;grid-template-columns:1fr 1fr;gap:8px}

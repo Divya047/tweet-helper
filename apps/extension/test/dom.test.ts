@@ -83,6 +83,52 @@ describe("extension DOM helpers", () => {
 
     expect(result.posts.map((post) => post.id)).toEqual(["1", "2", "3", "4"]);
     expect(result.scrolls).toBeGreaterThanOrEqual(1);
+    expect(result.stoppedReason).toBe("cap");
+  });
+
+  it("stops a long feed scroll when duration elapses or abort fires", async () => {
+    document.body.innerHTML = `<article data-testid="tweet"><a href="/a">A</a><div data-testid="tweetText">Visible post that is long enough to collect.</div><a href="/a/status/9">t</a></article>`;
+    const article = document.querySelector("article")!;
+    vi.spyOn(article as HTMLElement, "getBoundingClientRect").mockReturnValue(createRect({ top: 20, bottom: 120 }));
+
+    let clock = 0;
+    const progress: Array<{ posts: number; scrolls: number }> = [];
+    const abort = new AbortController();
+    const durationResult = await collectFeedPosts({
+      maxCandidates: 40,
+      maxScrolls: 40,
+      pauseMs: 0,
+      stagnantLimit: 99,
+      maxDurationMs: 1_500,
+      now: () => clock,
+      wait: async () => {
+        clock += 800;
+      },
+      scroll: () => {
+        clock += 100;
+      },
+      onProgress: (value) => progress.push({ posts: value.posts, scrolls: value.scrolls })
+    });
+    expect(durationResult.stoppedReason).toBe("duration");
+    expect(durationResult.elapsedMs).toBeGreaterThanOrEqual(1_500);
+    expect(progress.length).toBeGreaterThan(0);
+
+    clock = 0;
+    const aborted = collectFeedPosts({
+      maxCandidates: 40,
+      maxScrolls: 40,
+      pauseMs: 0,
+      stagnantLimit: 99,
+      maxDurationMs: 60_000,
+      signal: abort.signal,
+      now: () => clock,
+      wait: async () => {
+        clock += 200;
+        if (clock >= 400) abort.abort();
+      },
+      scroll: () => undefined
+    });
+    await expect(aborted).resolves.toMatchObject({ stoppedReason: "aborted" });
   });
 
   it("ignores posts left in the DOM outside the viewport", () => {

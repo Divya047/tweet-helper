@@ -21,6 +21,7 @@ let composerObserver: MutationObserver | undefined;
 let stopped = false;
 let enhancing = false;
 let enhanceAgain = false;
+let feedScrollAbort: AbortController | undefined;
 
 if (location.hostname === "x.com" || location.hostname === "twitter.com") init();
 
@@ -210,12 +211,38 @@ async function handleMessage(message: ExtensionMessage): Promise<unknown> {
     await expandTruncatedPostText(document, true);
     return { posts: extractVisiblePosts() };
   }
+  if (message.type === "STOP_FEED_SCROLL") {
+    feedScrollAbort?.abort();
+    feedScrollAbort = undefined;
+    return { stopped: true };
+  }
   if (message.type === "COLLECT_FEED_POSTS") {
-    return collectFeedPosts({
-      excludeIds: message.excludeIds,
-      ...(message.maxCandidates !== undefined ? { maxCandidates: message.maxCandidates } : {}),
-      ...(message.maxScrolls !== undefined ? { maxScrolls: message.maxScrolls } : {})
-    });
+    feedScrollAbort?.abort();
+    const abort = new AbortController();
+    feedScrollAbort = abort;
+    try {
+      return await collectFeedPosts({
+        ...(message.excludeIds ? { excludeIds: message.excludeIds } : {}),
+        ...(message.maxCandidates !== undefined ? { maxCandidates: message.maxCandidates } : {}),
+        ...(message.maxScrolls !== undefined ? { maxScrolls: message.maxScrolls } : {}),
+        ...(message.pauseMs !== undefined ? { pauseMs: message.pauseMs } : {}),
+        ...(message.stagnantLimit !== undefined ? { stagnantLimit: message.stagnantLimit } : {}),
+        ...(message.maxDurationMs !== undefined ? { maxDurationMs: message.maxDurationMs } : {}),
+        signal: abort.signal,
+        onProgress: message.reportProgress
+          ? (progress) => {
+              void sendRuntimeMessage({
+                type: "FEED_SCROLL_PROGRESS",
+                posts: progress.posts,
+                scrolls: progress.scrolls,
+                elapsedMs: progress.elapsedMs
+              });
+            }
+          : undefined
+      });
+    } finally {
+      if (feedScrollAbort === abort) feedScrollAbort = undefined;
+    }
   }
   return undefined;
 }

@@ -24,6 +24,7 @@ async function handleMessage(message: ExtensionMessage, sender: { tab?: { id?: n
     return state;
   }
   if (message.type === "RECORD_EVENT") return syncPublishedEvents(await appendEvent(message.event));
+  if (message.type === "FEED_SCROLL_PROGRESS") return { ok: true };
   if (message.type === "OPEN_SIDE_PANEL" && sender.tab?.id !== undefined) {
     await chrome.sidePanel?.open?.({ tabId: sender.tab.id });
     return { ok: true };

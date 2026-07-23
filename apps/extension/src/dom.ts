@@ -34,6 +34,12 @@ export function findTweetArticle(root: ParentNode, target: Pick<PostContext, "id
   return articles.find((article) => extractPostText(article) === needle);
 }
 
+export type FeedScrollProgress = {
+  posts: number;
+  scrolls: number;
+  elapsedMs: number;
+};
+
 export type CollectFeedPostsOptions = {
   root?: Document | HTMLElement;
   excludeIds?: Iterable<string>;
@@ -41,24 +47,59 @@ export type CollectFeedPostsOptions = {
   maxScrolls?: number;
   pauseMs?: number;
   stagnantLimit?: number;
+  /** Soft time budget for long trend scans. Checked between scrolls. */
+  maxDurationMs?: number;
+  signal?: AbortSignal;
+  onProgress?: (progress: FeedScrollProgress) => void;
   scroll?: () => void;
   wait?: (ms: number) => Promise<void>;
+  now?: () => number;
 };
 
-export async function collectFeedPosts(options: CollectFeedPostsOptions = {}): Promise<{ posts: VisiblePost[]; scrolls: number }> {
+export type CollectFeedPostsResult = {
+  posts: VisiblePost[];
+  scrolls: number;
+  elapsedMs: number;
+  stoppedReason: "cap" | "stagnant" | "duration" | "aborted";
+};
+
+export async function collectFeedPosts(options: CollectFeedPostsOptions = {}): Promise<CollectFeedPostsResult> {
   const root = options.root ?? document;
   const exclude = new Set(options.excludeIds ?? []);
   const maxCandidates = options.maxCandidates ?? 24;
   const maxScrolls = options.maxScrolls ?? 10;
   const pauseMs = options.pauseMs ?? 750;
   const stagnantLimit = options.stagnantLimit ?? 2;
+  const maxDurationMs = options.maxDurationMs;
+  const signal = options.signal;
+  const onProgress = options.onProgress;
   const scroll = options.scroll ?? defaultScrollFeed;
   const wait = options.wait ?? ((ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms)));
+  const now = options.now ?? (() => Date.now());
+  const startedAt = now();
   const collected = new Map<string, VisiblePost>();
   let scrolls = 0;
   let stagnant = 0;
+  let stoppedReason: CollectFeedPostsResult["stoppedReason"] = "cap";
 
+  const elapsed = (): number => Math.max(0, now() - startedAt);
+  const report = (): void => {
+    onProgress?.({ posts: collected.size, scrolls, elapsedMs: elapsed() });
+  };
+  const timedOut = (): boolean => maxDurationMs !== undefined && elapsed() >= maxDurationMs;
+  const aborted = (): boolean => !!signal?.aborted;
+
+  report();
   while (collected.size < maxCandidates && scrolls <= maxScrolls) {
+    if (aborted()) {
+      stoppedReason = "aborted";
+      break;
+    }
+    if (timedOut()) {
+      stoppedReason = "duration";
+      break;
+    }
+
     await expandTruncatedPostText(root, true);
     const before = collected.size;
     for (const post of extractVisiblePosts(root)) {
@@ -67,20 +108,43 @@ export async function collectFeedPosts(options: CollectFeedPostsOptions = {}): P
       collected.set(key, { ...post, viewportIndex: collected.size });
       if (collected.size >= maxCandidates) break;
     }
-    if (collected.size >= maxCandidates) break;
-    if (scrolls >= maxScrolls) break;
+    report();
+
+    if (collected.size >= maxCandidates) {
+      stoppedReason = "cap";
+      break;
+    }
+    if (scrolls >= maxScrolls) {
+      stoppedReason = "cap";
+      break;
+    }
     if (collected.size === before) {
       stagnant += 1;
-      if (stagnant >= stagnantLimit && scrolls > 0) break;
+      if (stagnant >= stagnantLimit && scrolls > 0) {
+        stoppedReason = "stagnant";
+        break;
+      }
     } else {
       stagnant = 0;
     }
+
+    if (aborted()) {
+      stoppedReason = "aborted";
+      break;
+    }
+    if (timedOut()) {
+      stoppedReason = "duration";
+      break;
+    }
+
     scroll();
     scrolls += 1;
+    report();
     await wait(pauseMs);
   }
 
-  return { posts: [...collected.values()], scrolls };
+  report();
+  return { posts: [...collected.values()], scrolls, elapsedMs: elapsed(), stoppedReason };
 }
 
 function defaultScrollFeed(): void {

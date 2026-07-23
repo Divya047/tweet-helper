@@ -38,6 +38,14 @@ export interface ExtensionState {
   events: ClientEvent[];
   activity: { dayKey: string; posts: number; replies: number };
 }
+export type FeedScrollStoppedReason = "cap" | "stagnant" | "duration" | "aborted";
+
+export interface FeedTrend {
+  label: string;
+  count: number;
+  sampleAngle?: string;
+}
+
 export type ExtensionMessage =
   | { type: "GET_STATE" }
   | { type: "SET_QUEUE"; queue: QueueItem[]; activeQueueItemId?: string }
@@ -48,7 +56,18 @@ export type ExtensionMessage =
   | { type: "RECORD_EVENT"; event: ClientEvent }
   | { type: "OPEN_SIDE_PANEL" }
   | { type: "SCAN_VISIBLE" }
-  | { type: "COLLECT_FEED_POSTS"; excludeIds?: string[]; maxCandidates?: number; maxScrolls?: number };
+  | {
+      type: "COLLECT_FEED_POSTS";
+      excludeIds?: string[];
+      maxCandidates?: number;
+      maxScrolls?: number;
+      pauseMs?: number;
+      stagnantLimit?: number;
+      maxDurationMs?: number;
+      reportProgress?: boolean;
+    }
+  | { type: "STOP_FEED_SCROLL" }
+  | { type: "FEED_SCROLL_PROGRESS"; posts: number; scrolls: number; elapsedMs: number };
 
 export const FIND_HIGH_INTENT = {
   targetReplies: 8,
@@ -59,22 +78,144 @@ export const FIND_HIGH_INTENT = {
   minScore: 70
 } as const;
 
+/** Long feed scroll used to surface circulating topics for original post ideas. */
+export const TREND_SCAN = {
+  maxCandidates: 48,
+  maxScrolls: 80,
+  scrollPauseMs: 800,
+  stagnantLimit: 5,
+  maxDurationMs: 150_000,
+  scoreSampleSize: 16,
+  topTrends: 4
+} as const;
+
 export function sourcePostUrl(target?: PostContext): string | undefined {
   if (target?.url?.includes("/status/")) return target.url;
   if (target?.id && /^\d+$/.test(target.id)) return `https://x.com/i/status/${target.id}`;
   return undefined;
 }
 
-export const BATCH_STRATEGIES = [
-  { label: "Direct insight", instruction: "Lead with one crisp, useful insight founders or builders can apply. Do not ask a question.", question: false },
-  { label: "Contrarian take", instruction: "Offer a defensible founder/builder contrarian take with reasoning. Do not ask a question.", question: false },
-  { label: "Practical example", instruction: "Give one concise shipping or product example with a concrete detail. Do not ask a question.", question: false },
-  { label: "Useful checklist", instruction: "Turn the idea into a short useful checklist for builders. Do not ask a question.", question: false },
-  { label: "Tradeoff question", instruction: "Share one useful premise about a technical or product tradeoff, then ask one specific question peers can answer in a sentence. Avoid trivia and engagement bait.", question: true },
-  { label: "Production lesson", instruction: "Share one useful premise about what broke or surprised you while shipping, then ask one experience-based question peers can answer in a sentence. Avoid trivia and engagement bait.", question: true },
-  { label: "Peer recommendation", instruction: "Share one useful premise, then ask peers for one concrete recommendation with context (tool, approach, or pattern). Avoid trivia and engagement bait.", question: true },
-  { label: "Concise observation", instruction: "Write one concise, specific observation from building or founding with no question.", question: false }
-] as const;
+/** Evenly sample posts across a long scroll so scoring stays within the backend cap. */
+export function samplePostsForScoring<T>(posts: T[], limit: number): T[] {
+  if (limit <= 0 || posts.length === 0) return [];
+  if (posts.length <= limit) return [...posts];
+  const sampled: T[] = [];
+  for (let index = 0; index < limit; index += 1) {
+    const position = Math.floor((index * (posts.length - 1)) / Math.max(1, limit - 1));
+    sampled.push(posts[position]!);
+  }
+  return sampled;
+}
+
+/** Cluster topic summaries from scored feed posts into ranked feed trends. */
+export function deriveFeedTrends(
+  rankedPosts: Array<{ topicSummary?: string; suggestedAngle?: string; score?: number }>,
+  limit = TREND_SCAN.topTrends
+): FeedTrend[] {
+  const buckets = new Map<string, { label: string; count: number; sampleAngle?: string; bestScore: number }>();
+  for (const post of rankedPosts) {
+    const label = normalizeTrendLabel(post.topicSummary);
+    if (!label) continue;
+    const key = trendClusterKey(label);
+    const existing = buckets.get(key);
+    const score = typeof post.score === "number" ? post.score : 0;
+    if (!existing) {
+      buckets.set(key, {
+        label,
+        count: 1,
+        ...(post.suggestedAngle?.trim() ? { sampleAngle: post.suggestedAngle.trim() } : {}),
+        bestScore: score
+      });
+      continue;
+    }
+    existing.count += 1;
+    if (score > existing.bestScore) {
+      existing.bestScore = score;
+      existing.label = label;
+      if (post.suggestedAngle?.trim()) existing.sampleAngle = post.suggestedAngle.trim();
+    }
+  }
+
+  return [...buckets.values()]
+    .sort((left, right) => right.count - left.count || right.bestScore - left.bestScore)
+    .slice(0, Math.max(0, limit))
+    .map(({ label, count, sampleAngle }) => ({
+      label,
+      count,
+      ...(sampleAngle ? { sampleAngle } : {})
+    }));
+}
+
+/** One focused brief per feed trend — never mash multiple themes into one topic. */
+export function buildSingleTrendBrief(trend: FeedTrend, audience: string): string {
+  const who = audience || "peer founders and builders";
+  const angle = trend.sampleAngle ? `\nUseful angle worth joining: ${trend.sampleAngle}` : "";
+  return [
+    `Join this circulating conversation among ${who}:`,
+    trend.label,
+    `(seen ${trend.count}× in the current feed)${angle}`,
+    "Write one original post with specific value for this single theme only.",
+    "Do not mention, combine, or reference any other unrelated trends.",
+    "Do not copy or closely paraphrase any source post."
+  ].join("\n");
+}
+
+function normalizeTrendLabel(value: string | undefined): string | undefined {
+  const cleaned = value?.replace(/\s+/g, " ").trim();
+  if (!cleaned) return undefined;
+  return cleaned.replace(/[.!?]+$/g, "").trim().slice(0, 80);
+}
+
+function trendClusterKey(label: string): string {
+  const stop = new Set(["the", "a", "an", "and", "or", "of", "to", "in", "on", "for", "with", "about", "that", "from"]);
+  return label
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .split(/\s+/)
+    .filter((token) => token && !stop.has(token))
+    .slice(0, 2)
+    .join(" ");
+}
+
+/** Map a standard generate/post 1+4 response into Explore cards (recommended first). */
+export function mapNativeExplore(
+  response: {
+    recommendation?: { id: string; text: string; strategy?: string };
+    explore?: Array<{ id: string; text: string; strategy?: string }>;
+    suggestions: Array<{ id: string; text: string; strategy?: string }>;
+    strategies?: Array<{ label: string }>;
+  }
+): Draft[] {
+  const labels = response.strategies?.map((item) => item.label) ?? [
+    "Recommended",
+    "Specific",
+    "Constructive tension",
+    "Experience question",
+    "Concise practical"
+  ];
+  const recommended = response.recommendation ?? response.suggestions[0];
+  const exploreItems = (response.explore?.length ? response.explore : response.suggestions.slice(1, 5)).slice(0, 4);
+  const cards: Draft[] = [];
+  if (recommended) {
+    cards.push({
+      id: recommended.id,
+      text: recommended.text,
+      strategy: recommended.strategy ?? labels[0] ?? "Recommended",
+      recommended: true
+    });
+  }
+  for (let index = 0; index < exploreItems.length; index += 1) {
+    const item = exploreItems[index]!;
+    if (recommended && item.id === recommended.id) continue;
+    cards.push({
+      id: item.id,
+      text: item.text,
+      strategy: item.strategy ?? labels[index + 1] ?? `Explore ${index + 1}`,
+      recommended: false
+    });
+  }
+  return cards.slice(0, 5);
+}
 
 /** Distinct reply structures assigned across a queue batch so drafts do not collapse into one anecdote tone. */
 export const REPLY_TONES = [
