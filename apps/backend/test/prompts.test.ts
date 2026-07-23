@@ -38,6 +38,10 @@ describe("audience growth prompts", () => {
     expect(reply).toContain("peer founder/builder expertise");
     expect(reply).toContain("Never invent facts");
     expect(reply).toContain("Do not default to anecdote openers");
+    expect(reply).toContain("Do not default to counterexample");
+    expect(reply).toContain(
+      "Prefer replies that signal peer founder/builder expertise: an implementation detail, constraint, tradeoff, practical caveat, pattern, or well-reasoned question."
+    );
     expect(reply).toContain("earn relevant follows");
     expect(scoring).toContain(DEFAULT_GROWTH_PREFERENCES.audience);
     expect(scoring).toContain("high metrics alone is not a reason");
