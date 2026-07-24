@@ -4,17 +4,23 @@ struct SetupView: View {
     enum ComposerMode: String, CaseIterable, Identifiable {
         case post = "Post", reply = "Reply"
         var id: Self { self }
+        var contentKind: ContentKind { self == .post ? .post : .reply }
     }
 
     @State private var mode: ComposerMode = .post
     @State private var brief = ""
     @State private var source = ""
     @State private var draft = ""
-    @State private var suggestions: [DraftSuggestion] = []
+    @State private var cards: [DraftCard] = []
+    @State private var selectedCard = 0
+    @State private var showingAlternatives = false
+    @State private var activity = TweetHelperSettings.activity
     @State private var queue: [SharedDraft] = []
     @State private var isLoading = false
     @State private var message: String?
     @State private var showingSettings = false
+
+    private var selected: DraftCard? { cards[safe: selectedCard] }
 
     var body: some View {
         NavigationStack {
@@ -27,6 +33,8 @@ struct SetupView: View {
 
                 ScrollView {
                     VStack(alignment: .leading, spacing: 18) {
+                        softGoalsStrip
+
                         GroupBox(mode == .post ? "Brief" : "Reply context") {
                             TextEditor(text: mode == .post ? $brief : $source)
                                 .frame(minHeight: 100)
@@ -53,17 +61,29 @@ struct SetupView: View {
                                 .font(.footnote).foregroundStyle(.secondary)
                         }
 
-                        if !suggestions.isEmpty {
-                            SectionTitle("Suggestions")
-                            ForEach(suggestions) { suggestion in
-                                Button {
-                                    draft = suggestion.text
-                                } label: {
-                                    VStack(alignment: .leading, spacing: 6) {
-                                        Text(suggestion.text).foregroundStyle(.primary)
-                                        Text(suggestion.rationale).font(.caption).foregroundStyle(.secondary)
-                                    }.frame(maxWidth: .infinity, alignment: .leading)
-                                }.buttonStyle(.bordered)
+                        if let card = selected {
+                            SectionTitle(card.recommended ? "\(card.strategy) · Recommended" : card.strategy)
+                            Text(card.text)
+                                .padding()
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(.quaternary, in: RoundedRectangle(cornerRadius: 14))
+                            Button("Use this draft") { draft = card.text }
+                                .buttonStyle(.bordered)
+                            if cards.count > 1 {
+                                Button(showingAlternatives ? "Hide alternatives" : "Explore alternatives") {
+                                    showingAlternatives.toggle()
+                                }
+                                if showingAlternatives {
+                                    Picker("Draft", selection: $selectedCard) {
+                                        ForEach(cards.indices, id: \.self) { index in
+                                            Text(cards[index].recommended ? "Recommended" : "Alt \(index)").tag(index)
+                                        }
+                                    }
+                                    .pickerStyle(.segmented)
+                                    .onChange(of: selectedCard) { _, _ in
+                                        if let card = selected { draft = card.text }
+                                    }
+                                }
                             }
                         }
 
@@ -105,42 +125,64 @@ struct SetupView: View {
                 }
             }
             .sheet(isPresented: $showingSettings) { SettingsView() }
-            .task { refreshQueue() }
-            .onChange(of: showingSettings) { _, isShowing in if !isShowing { refreshQueue() } }
+            .task { refresh() }
+            .onChange(of: showingSettings) { _, isShowing in if !isShowing { refresh() } }
         }
+    }
+
+    private var softGoalsStrip: some View {
+        HStack(spacing: 16) {
+            Label("\(activity.posts)/\(ActivityState.softGoals.posts) posts", systemImage: "square.and.pencil")
+            Label("\(activity.replies)/\(ActivityState.softGoals.replies) replies", systemImage: "bubble.left")
+            Spacer(minLength: 0)
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Today: \(activity.posts) of \(ActivityState.softGoals.posts) posts, \(activity.replies) of \(ActivityState.softGoals.replies) replies")
     }
 
     private func generate() async {
         let input = (mode == .post ? brief : source).trimmingCharacters(in: .whitespacesAndNewlines)
         guard !input.isEmpty else { message = mode == .post ? "Enter a brief first." : "Paste reply context first."; return }
         isLoading = true; message = nil
+        selectedCard = 0
+        showingAlternatives = false
         do {
-            let result = mode == .post
-                ? try await TweetHelperAPI.generatePost(topic: input)
-                : try await TweetHelperAPI.generateReply(context: input)
-            suggestions = result
-            draft = result.first?.text ?? ""
-            message = result.isEmpty ? "The backend returned no drafts." : nil
+            let growth = TweetHelperSettings.growthPreferences
+            let response = mode == .post
+                ? try await TweetHelperAPI.generatePost(topic: input, growth: growth)
+                : try await TweetHelperAPI.generateReply(context: input, growth: growth)
+            cards = DraftExploreMapper.map(response)
+            draft = cards.first?.text ?? ""
+            message = cards.isEmpty ? "The backend returned no drafts." : nil
         } catch { message = readableNetworkError(error) }
         isLoading = false
     }
 
     private func saveDraft() {
         guard let text = draft.nilIfBlank else { return }
-        let match = suggestions.first { $0.text == text }
+        let match = cards.first { $0.text == text }
         do {
-            try SharedDraftStore.save(SharedDraft(text: text, sourceText: mode == .reply ? source : brief,
-                                                  suggestionID: match?.id))
-            refreshQueue(); message = "Saved. Switch to the Tweet Helper keyboard to insert it."
+            try SharedDraftStore.save(SharedDraft(
+                text: text,
+                sourceText: mode == .reply ? source : brief,
+                suggestionID: match?.suggestionID,
+                contentKind: mode.contentKind
+            ))
+            refresh(); message = "Saved. Switch to the Tweet Helper keyboard to insert it."
         } catch { message = "Could not save the draft: \(error.localizedDescription)" }
     }
 
     private func remove(_ item: SharedDraft) {
-        do { try SharedDraftStore.remove(id: item.id); refreshQueue() }
+        do { try SharedDraftStore.remove(id: item.id); refresh() }
         catch { message = "Could not remove the draft." }
     }
 
-    private func refreshQueue() { queue = SharedDraftStore.load() }
+    private func refresh() {
+        activity = TweetHelperSettings.activity
+        queue = SharedDraftStore.load()
+    }
 }
 
 private struct SectionTitle: View {
@@ -149,10 +191,15 @@ private struct SectionTitle: View {
     var body: some View { Text(title).font(.headline) }
 }
 
+private extension Collection {
+    subscript(safe index: Index) -> Element? { indices.contains(index) ? self[index] : nil }
+}
+
 private struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var backendURL = TweetHelperSettings.backendURL
     @State private var authToken = TweetHelperSettings.authToken
+    @State private var growth = TweetHelperSettings.growthPreferences
     @State private var status = "Settings are shared with the keyboard and Share Extension."
     @State private var checking = false
 
@@ -166,6 +213,20 @@ private struct SettingsView: View {
                     Button("Save") { save(); status = "Saved to the App Group." }
                     Button(checking ? "Checking…" : "Check connection") { Task { await check() } }.disabled(checking)
                     Text(status).font(.footnote).foregroundStyle(.secondary)
+                    Text("Paste the exact URL that loads /health in Safari. If Check connection fails with [-1004], allow Local Network for Tweet Helper in iOS Settings → Tweet Helper.")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
+                Section("Growth defaults") {
+                    TextField("Target audience", text: $growth.audience, axis: .vertical)
+                        .lineLimit(2...4)
+                    Picker("Content pillar", selection: $growth.pillar) {
+                        ForEach(GrowthPreferences.pillarOptions, id: \.id) { Text($0.label).tag($0.id) }
+                    }
+                    Picker("Desired response", selection: $growth.outcome) {
+                        ForEach(GrowthPreferences.outcomeOptions, id: \.id) { Text($0.label).tag($0.id) }
+                    }
+                    Text("Used for Generate and Share. Change here when you want a different default.")
+                        .font(.footnote).foregroundStyle(.secondary)
                 }
                 Section("Extensions") {
                     Text("Share text or a URL from Chrome or X to Tweet Helper. Enable the Tweet Helper keyboard in Settings → General → Keyboard → Keyboards and allow Full Access for backend calls.")
@@ -178,10 +239,17 @@ private struct SettingsView: View {
         }
     }
 
-    private func save() { TweetHelperSettings.backendURL = backendURL; TweetHelperSettings.authToken = authToken }
+    private func save() {
+        TweetHelperSettings.backendURL = backendURL
+        TweetHelperSettings.authToken = authToken
+        TweetHelperSettings.growthPreferences = growth
+    }
+
     private func check() async {
-        save(); checking = true; defer { checking = false }
-        do { status = try await TweetHelperAPI.getHealth() ? "Connected." : "Backend did not report healthy." }
+        save()
+        LocalNetworkAccess.requestPermissionIfNeeded()
+        checking = true; defer { checking = false }
+        do { status = try await TweetHelperAPI.getHealth() ? "Connected to \(TweetHelperSettings.backendURL)." : "Backend did not report healthy." }
         catch { status = readableNetworkError(error) }
     }
 }

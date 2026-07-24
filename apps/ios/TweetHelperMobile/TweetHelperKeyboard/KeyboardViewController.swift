@@ -53,6 +53,13 @@ final class KeyboardViewController: UIInputViewController {
             return
         }
         textDocumentProxy.insertText(draft.text)
+        if let kind = draft.contentKind {
+            TweetHelperSettings.recordActivity(kind: kind)
+        } else if draft.sourceURL != nil || draft.sourceText?.nilIfBlank != nil {
+            TweetHelperSettings.recordActivity(kind: .reply)
+        } else {
+            TweetHelperSettings.recordActivity(kind: .post)
+        }
         statusLabel.text = "Inserted. Recording usage…"
         let eventID = UUID()
         Task {
@@ -67,7 +74,11 @@ final class KeyboardViewController: UIInputViewController {
         busy = true; statusLabel.text = "Rewriting…"
         Task {
             do {
-                guard let suggestion = try await TweetHelperAPI.rewrite(text: input).first else {
+                let response = try await TweetHelperAPI.rewrite(text: input, kind: "comment")
+                guard let suggestion = DraftExploreMapper.map(response).first
+                        ?? response.suggestions.first.map({
+                            DraftCard(from: $0, strategy: $0.strategy ?? "Rewrite", recommended: true)
+                        }) else {
                     finishBusy("No rewrite was returned."); return
                 }
                 await MainActor.run {

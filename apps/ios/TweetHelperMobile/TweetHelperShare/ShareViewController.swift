@@ -23,7 +23,7 @@ final class ShareViewController: UIViewController {
 private struct ShareComposerView: View {
     let extensionContext: NSExtensionContext?
     @State private var content = SharedContent()
-    @State private var suggestions: [DraftSuggestion] = []
+    @State private var cards: [DraftCard] = []
     @State private var selected = 0
     @State private var loading = true
     @State private var exploring = false
@@ -37,18 +37,20 @@ private struct ShareComposerView: View {
                     else if !content.isUsable { emptyState }
                     else {
                         sourceCard
-                        if let suggestion = suggestions[safe: selected] {
-                            Text(selected == 0 ? "Recommended reply" : "Alternative \(selected)").font(.headline)
-                            Text(suggestion.text).font(.title3).textSelection(.enabled)
+                        if let card = cards[safe: selected] {
+                            Text(card.recommended ? "\(card.strategy) · Recommended" : card.strategy).font(.headline)
+                            Text(card.text).font(.title3).textSelection(.enabled)
                                 .padding().frame(maxWidth: .infinity, alignment: .leading)
                                 .background(.quaternary, in: RoundedRectangle(cornerRadius: 16))
-                            Button("Save draft for keyboard") { save(suggestion) }
+                            Button("Save draft for keyboard") { save(card) }
                                 .buttonStyle(.borderedProminent).frame(maxWidth: .infinity)
-                            if suggestions.count > 1 {
+                            if cards.count > 1 {
                                 Button(exploring ? "Hide alternatives" : "Explore alternatives") { exploring.toggle() }
                                 if exploring {
                                     Picker("Draft", selection: $selected) {
-                                        ForEach(suggestions.indices, id: \.self) { Text($0 == 0 ? "Recommended" : "Alternative \($0)").tag($0) }
+                                        ForEach(cards.indices, id: \.self) { index in
+                                            Text(cards[index].recommended ? "Recommended" : "Alt \(index)").tag(index)
+                                        }
                                     }.pickerStyle(.segmented)
                                 }
                             }
@@ -95,18 +97,24 @@ private struct ShareComposerView: View {
     }
 
     private func generate() async {
-        message = nil; suggestions = []; selected = 0
+        message = nil; cards = []; selected = 0
         let context = content.text ?? content.url?.absoluteString ?? ""
         do {
-            suggestions = try await TweetHelperAPI.generateReply(context: context, sourceURL: content.url)
-            if suggestions.isEmpty { message = "No drafts were returned. Check the backend and try again." }
+            let response = try await TweetHelperAPI.generateReply(context: context, sourceURL: content.url)
+            cards = DraftExploreMapper.map(response)
+            if cards.isEmpty { message = "No drafts were returned. Check the backend and try again." }
         } catch { message = readableNetworkError(error) }
     }
 
-    private func save(_ suggestion: DraftSuggestion) {
+    private func save(_ card: DraftCard) {
         do {
-            try SharedDraftStore.save(SharedDraft(text: suggestion.text, sourceText: content.text,
-                                                  sourceURL: content.url, suggestionID: suggestion.id))
+            try SharedDraftStore.save(SharedDraft(
+                text: card.text,
+                sourceText: content.text,
+                sourceURL: content.url,
+                suggestionID: card.suggestionID,
+                contentKind: .reply
+            ))
             message = "Saved. Open X and use the Tweet Helper keyboard to insert it."
         } catch { message = "Could not save to the App Group: \(error.localizedDescription)" }
     }
