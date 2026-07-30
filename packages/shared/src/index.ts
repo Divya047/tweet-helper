@@ -40,15 +40,56 @@ export interface SourcePost {
   quotedPost?: SourcePost;
 }
 
+export type SpeechAct =
+  | "question"
+  | "claim"
+  | "announcement"
+  | "advice"
+  | "opinion"
+  | "complaint"
+  | "other";
+
+export type ReplyStance =
+  | "answer"
+  | "agree-and-add"
+  | "clarify"
+  | "challenge"
+  | "contextualize"
+  | "ask"
+  | "acknowledge"
+  | "abstain";
+
 export interface IntentAnalysis {
   intent: string;
   confidence: number;
   needsClarification: boolean;
+  speechAct?: SpeechAct;
+  /** One-line paraphrase of what the author is asserting or asking. */
+  claimOrAsk?: string;
+  /** One-line “a useful reply should …” grounded in the source. */
+  replyObjective?: string;
+  /** Whether there is enough original value to justify replying at all. */
+  shouldReply?: boolean;
+  /** 0-100 estimate of whether a non-generic reply is worth posting. */
+  replyWorthiness?: number;
+  /** Source-aware stance selected before prose is drafted. */
+  recommendedStance?: ReplyStance;
+  stanceReason?: string;
   targetContext?: string;
   parentContext?: string;
   quotedContext?: string;
   constraints: string[];
 }
+
+const SPEECH_ACTS: readonly SpeechAct[] = [
+  "question",
+  "claim",
+  "announcement",
+  "advice",
+  "opinion",
+  "complaint",
+  "other"
+];
 
 export interface DraftStrategy {
   id: string;
@@ -167,6 +208,26 @@ export interface DraftSuggestion {
   isQuestion?: boolean;
 }
 
+export interface TasteCandidateEvaluation {
+  suggestionId: string;
+  score: number;
+  sourceFit: number;
+  novelty: number;
+  voiceFit: number;
+  restraint: number;
+  reasons: string[];
+  flags: string[];
+}
+
+export interface TasteDecision {
+  shouldReply: boolean;
+  reason: string;
+  confidence: number;
+  recommendedId?: string;
+  stance?: ReplyStance;
+  evaluations: TasteCandidateEvaluation[];
+}
+
 export interface DraftResponse {
   suggestions: DraftSuggestion[];
   recommendedId?: string;
@@ -174,6 +235,10 @@ export interface DraftResponse {
   explore?: DraftSuggestion[];
   intentAnalysis?: IntentAnalysis;
   strategies?: DraftStrategy[];
+  /** True when the taste gate decided that silence beats every generated option. */
+  abstained?: boolean;
+  abstainReason?: string;
+  tasteDecision?: TasteDecision;
 }
 
 export interface ScoredPost {
@@ -331,7 +396,8 @@ export function validateDraftResponse(value: unknown): DraftResponse {
     openingKey(other.text) === openingKey(candidate.text) || textSimilarity(other.text, candidate.text) >= 0.82
   ) === index);
 
-  if (suggestions.length === 0) {
+  const abstained = value.abstained === true;
+  if (suggestions.length === 0 && !abstained) {
     throw new Error("Draft response must include at least one suggestion.");
   }
 
@@ -344,11 +410,76 @@ export function validateDraftResponse(value: unknown): DraftResponse {
         return parseDraftSuggestion(item, index);
       })
     : suggestions.slice(1, 5);
+  const intentAnalysis = parseIntentAnalysis(value.intentAnalysis);
   return {
     suggestions,
     ...(typeof value.recommendedId === "string" ? { recommendedId: value.recommendedId } : recommendation ? { recommendedId: recommendation.id } : {}),
     ...(recommendation ? { recommendation } : {}),
-    ...(explore ? { explore } : {})
+    ...(explore ? { explore } : {}),
+    ...(intentAnalysis ? { intentAnalysis } : {}),
+    ...(abstained ? { abstained: true } : {}),
+    ...(typeof value.abstainReason === "string" && value.abstainReason.trim()
+      ? { abstainReason: value.abstainReason.trim() }
+      : {})
+  };
+}
+
+export function parseIntentAnalysis(value: unknown): IntentAnalysis | undefined {
+  if (!isObject(value) || typeof value.intent !== "string" || !value.intent.trim()) {
+    return undefined;
+  }
+  const confidence =
+    typeof value.confidence === "number" && !Number.isNaN(value.confidence)
+      ? Math.min(1, Math.max(0, value.confidence))
+      : 0.5;
+  const constraints = Array.isArray(value.constraints)
+    ? value.constraints.filter((item): item is string => typeof item === "string" && item.trim().length > 0).map((item) => item.trim())
+    : [];
+  const speechAct =
+    typeof value.speechAct === "string" && SPEECH_ACTS.includes(value.speechAct as SpeechAct)
+      ? (value.speechAct as SpeechAct)
+      : undefined;
+  const replyStances: readonly ReplyStance[] = [
+    "answer",
+    "agree-and-add",
+    "clarify",
+    "challenge",
+    "contextualize",
+    "ask",
+    "acknowledge",
+    "abstain"
+  ];
+  const recommendedStance =
+    typeof value.recommendedStance === "string" && replyStances.includes(value.recommendedStance as ReplyStance)
+      ? (value.recommendedStance as ReplyStance)
+      : undefined;
+  return {
+    intent: value.intent.trim(),
+    confidence,
+    needsClarification: value.needsClarification === true || confidence < 0.5,
+    constraints,
+    ...(speechAct ? { speechAct } : {}),
+    ...(typeof value.claimOrAsk === "string" && value.claimOrAsk.trim() ? { claimOrAsk: value.claimOrAsk.trim() } : {}),
+    ...(typeof value.replyObjective === "string" && value.replyObjective.trim()
+      ? { replyObjective: value.replyObjective.trim() }
+      : {}),
+    ...(typeof value.shouldReply === "boolean" ? { shouldReply: value.shouldReply } : {}),
+    ...(typeof value.replyWorthiness === "number" && Number.isFinite(value.replyWorthiness)
+      ? { replyWorthiness: Math.min(100, Math.max(0, value.replyWorthiness)) }
+      : {}),
+    ...(recommendedStance ? { recommendedStance } : {}),
+    ...(typeof value.stanceReason === "string" && value.stanceReason.trim()
+      ? { stanceReason: value.stanceReason.trim() }
+      : {}),
+    ...(typeof value.targetContext === "string" && value.targetContext.trim()
+      ? { targetContext: value.targetContext.trim() }
+      : {}),
+    ...(typeof value.parentContext === "string" && value.parentContext.trim()
+      ? { parentContext: value.parentContext.trim() }
+      : {}),
+    ...(typeof value.quotedContext === "string" && value.quotedContext.trim()
+      ? { quotedContext: value.quotedContext.trim() }
+      : {})
   };
 }
 

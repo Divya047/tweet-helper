@@ -267,4 +267,146 @@ describe("backend routes", () => {
     expect(JSON.stringify(requests[1]?.messages)).toContain("Preserve the user's meaning");
     await app.close();
   });
+
+  it("selects one source-aware reply through the taste judge", async () => {
+    const db = openDatabase(":memory:");
+    const mockTogether = createMockTogetherClient((request) => {
+      if (request.schemaName === "IntentAnalysis") {
+        return {
+          intent: "Author asks when to talk to customers",
+          confidence: 0.94,
+          needsClarification: false,
+          speechAct: "question",
+          claimOrAsk: "When should founders start customer interviews?",
+          replyObjective: "Answer with a useful timing principle",
+          shouldReply: true,
+          replyWorthiness: 88,
+          recommendedStance: "answer",
+          stanceReason: "There is a direct question worth answering.",
+          constraints: []
+        };
+      }
+      if (request.schemaName === "DraftResponse") {
+        return {
+          suggestions: [
+            { id: "generic", text: "Great point. Talk to them early!", rationale: "Positive.", confidence: 0.9 },
+            { id: "sharp", text: "Before the roadmap hardens into assumptions.", rationale: "Answers directly.", confidence: 0.84 }
+          ]
+        };
+      }
+      return {
+        shouldReply: true,
+        reason: "The concise answer adds a useful timing principle.",
+        confidence: 0.91,
+        recommendedId: "sharp",
+        stance: "answer",
+        evaluations: [
+          { suggestionId: "generic", score: 38, sourceFit: 55, novelty: 20, voiceFit: 30, restraint: 45, reasons: ["Generic applause"], flags: ["generic"] },
+          { suggestionId: "sharp", score: 91, sourceFit: 95, novelty: 86, voiceFit: 90, restraint: 94, reasons: ["Direct and useful"], flags: [] }
+        ]
+      };
+    });
+    const { app } = await buildServer({
+      db,
+      config: { dbPath: ":memory:", dailyBudgetUsd: 10, monthlyBudgetUsd: 10 },
+      togetherClient: mockTogether
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/generate/comment",
+      payload: { sourcePost: { id: "1", text: "When should founders start talking to customers?" } }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().data.suggestions).toHaveLength(1);
+    expect(response.json().data.suggestions[0]).toMatchObject({
+      id: "sharp",
+      text: "Before the roadmap hardens into assumptions.",
+      strategy: "answer"
+    });
+    expect(response.json().data.tasteDecision.recommendedId).toBe("sharp");
+    await app.close();
+  });
+
+  it("returns an explicit abstention when no reply clears the taste bar", async () => {
+    const db = openDatabase(":memory:");
+    const mockTogether = createMockTogetherClient((request) => {
+      if (request.schemaName === "IntentAnalysis") {
+        return {
+          intent: "Bare launch announcement",
+          confidence: 0.95,
+          needsClarification: false,
+          speechAct: "announcement",
+          claimOrAsk: "A product shipped",
+          replyObjective: "Only respond if there is something distinct to add",
+          shouldReply: false,
+          replyWorthiness: 25,
+          recommendedStance: "abstain",
+          stanceReason: "A reply would only be applause.",
+          constraints: []
+        };
+      }
+      if (request.schemaName === "DraftResponse") {
+        return {
+          suggestions: [
+            { id: "applause", text: "Love this. Huge congrats!", rationale: "Supportive.", confidence: 0.9 }
+          ]
+        };
+      }
+      return {
+        shouldReply: false,
+        reason: "Every candidate is generic applause.",
+        confidence: 0.96,
+        stance: "abstain",
+        evaluations: [
+          { suggestionId: "applause", score: 22, sourceFit: 40, novelty: 5, voiceFit: 18, restraint: 25, reasons: ["Generic applause"], flags: ["generic"] }
+        ]
+      };
+    });
+    const { app } = await buildServer({
+      db,
+      config: { dbPath: ":memory:", dailyBudgetUsd: 10, monthlyBudgetUsd: 10 },
+      togetherClient: mockTogether
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/generate/comment",
+      payload: { sourcePost: { id: "1", text: "We shipped v2 today." } }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().data.suggestions).toEqual([]);
+    expect(response.json().data.abstained).toBe(true);
+    expect(response.json().data.abstainReason).toMatch(/generic applause/i);
+    await app.close();
+  });
+
+  it("learns negative feedback in the inspectable personal taste profile", async () => {
+    const db = openDatabase(":memory:");
+    const { app } = await buildServer({
+      db,
+      config: { dbPath: ":memory:", dailyBudgetUsd: 10, monthlyBudgetUsd: 10 },
+      togetherClient: createMockTogetherClient(() => ({}))
+    });
+
+    await app.inject({
+      method: "POST",
+      url: "/api/feedback",
+      payload: {
+        suggestionId: "skip-me",
+        kind: "comment",
+        decision: "skipped",
+        originalText: "Great point. Love this.",
+        context: { sourcePost: { text: "A launch announcement." } }
+      }
+    });
+    const profile = await app.inject({ method: "GET", url: "/api/taste-profile" });
+
+    expect(profile.statusCode).toBe(200);
+    expect(profile.json().data.decisionCounts.skipped).toBe(1);
+    expect(profile.json().data.negativeExamples).toContain("Great point. Love this.");
+    await app.close();
+  });
 });

@@ -35,6 +35,33 @@ describe("extension DOM helpers", () => {
     });
   });
 
+  it("keeps a feed post's text attached to its own link when it contains a quote", () => {
+    document.body.innerHTML = `
+      <article data-testid="tweet">
+        <a href="/mainauthor">Main Author</a>
+        <a href="/mainauthor/status/111111111">2h</a>
+        <div data-testid="tweetText">The main post is the reply opportunity that should be queued.</div>
+        <div class="quoted-post">
+          <a href="/quotedauthor">Quoted Author</a>
+          <a href="/quotedauthor/status/222222222">1h</a>
+          <div data-testid="tweetText">The nested quote must not supply the Open post link.</div>
+        </div>
+      </article>
+    `;
+    const article = document.querySelector("article")!;
+    vi.spyOn(article, "getBoundingClientRect").mockReturnValue(createRect({ top: 10, bottom: 190 }));
+
+    const posts = extractVisiblePosts(document);
+
+    expect(posts).toHaveLength(1);
+    expect(posts[0]).toMatchObject({
+      id: "111111111",
+      author: "mainauthor",
+      text: "The main post is the reply opportunity that should be queued."
+    });
+    expect(posts[0]?.url).toContain("/mainauthor/status/111111111");
+  });
+
   it("finds a tweet article by status id for open-post navigation", () => {
     document.body.innerHTML = `
       <article data-testid="tweet" id="a">
@@ -273,10 +300,64 @@ describe("extension DOM helpers", () => {
   });
 
   it("keeps an article's main post as target and its nested quote as quoted context", () => {
-    document.body.innerHTML = `<article data-testid="tweet"><a href="/main">Main</a><div data-testid="tweetText">Main source post</div><a href="/main/status/1">t</a><a href="/quote">Quote</a><div data-testid="tweetText">Quoted post details</div><a href="/quote/status/2">t</a><div role="textbox" contenteditable="true"></div></article>`;
+    document.body.innerHTML = `<article data-testid="tweet"><a href="/main">Main</a><div data-testid="tweetText">Main source post</div><a href="/main/status/1">t</a><a href="/quote">Quote</a><div data-testid="tweetText">Quoted post details</div><a href="/quote/status/2">t</a><div role="textbox" contenteditable="true"></div><button data-testid="tweetButtonInline">Reply</button></article>`;
     const context = getComposerContext(document.querySelector<HTMLElement>('[role="textbox"]')!);
+    expect(context.kind).toBe("reply");
     expect(context.target?.text).toBe("Main source post");
     expect(context.quoted?.text).toBe("Quoted post details");
+  });
+
+  it("counts quote composers as posts even when a source tweet is visible", () => {
+    document.body.innerHTML = `
+      <div role="dialog">
+        <div data-testid="tweetTextarea_0" role="textbox" contenteditable="true"></div>
+        <button data-testid="tweetButton">Post</button>
+        <a href="/quoted">Quoted</a>
+        <div data-testid="tweetText">Quoted source that should not force a reply count</div>
+        <a href="/quoted/status/9">1h</a>
+      </div>
+    `;
+    const composer = document.querySelector<HTMLElement>('[role="textbox"]')!;
+    const quoted = document.querySelector<HTMLElement>('[data-testid="tweetText"]')!;
+    composer.getBoundingClientRect = () => createRect({ top: 40, bottom: 80 });
+    quoted.getBoundingClientRect = () => createRect({ top: 100, bottom: 140 });
+    const context = getComposerContext(composer);
+    expect(context.kind).toBe("post");
+    expect(context.target?.text).toContain("Quoted source");
+  });
+
+  it("classifies reply composers from the Reply button label", () => {
+    document.body.innerHTML = `
+      <div role="dialog">
+        <a href="/author">Author</a>
+        <div data-testid="tweetText">Source asking a question</div>
+        <a href="/author/status/42">2h</a>
+        <div data-testid="tweetTextarea_0" role="textbox" contenteditable="true"></div>
+        <button data-testid="tweetButton">Reply</button>
+      </div>
+    `;
+    const context = getComposerContext(document.querySelector<HTMLElement>('[role="textbox"]')!);
+    expect(context.kind).toBe("reply");
+    expect(context.target?.id).toBe("42");
+  });
+
+  it("treats Post-labeled reply composers with a source above as replies", () => {
+    document.body.innerHTML = `
+      <div role="dialog">
+        <a href="/author">Author</a>
+        <div data-testid="tweetText">Source asking a question</div>
+        <a href="/author/status/42">2h</a>
+        <div data-testid="tweetTextarea_0" role="textbox" contenteditable="true"></div>
+        <button data-testid="tweetButton">Post</button>
+      </div>
+    `;
+    const composer = document.querySelector<HTMLElement>('[role="textbox"]')!;
+    const source = document.querySelector<HTMLElement>('[data-testid="tweetText"]')!;
+    source.getBoundingClientRect = () => createRect({ top: 10, bottom: 40 });
+    composer.getBoundingClientRect = () => createRect({ top: 60, bottom: 100 });
+    const context = getComposerContext(composer);
+    expect(context.kind).toBe("reply");
+    expect(context.target?.id).toBe("42");
   });
 });
 

@@ -27,6 +27,76 @@ describe("shared validators", () => {
     expect(result.suggestions[0]?.id).toBeTruthy();
   });
 
+  it("parses nested intentAnalysis on draft responses", () => {
+    const result = validateDraftResponse({
+      intentAnalysis: {
+        intent: "Author is asking how early to talk to customers",
+        confidence: 0.9,
+        needsClarification: false,
+        speechAct: "question",
+        claimOrAsk: "When should founders talk to customers?",
+        replyObjective: "Give a concrete timing heuristic",
+        constraints: ["Do not invent metrics"],
+        targetContext: "Founders should talk to customers earlier."
+      },
+      suggestions: [{ text: "Before the deck.", rationale: "Answers the ask.", confidence: 0.85 }]
+    });
+
+    expect(result.intentAnalysis).toEqual({
+      intent: "Author is asking how early to talk to customers",
+      confidence: 0.9,
+      needsClarification: false,
+      speechAct: "question",
+      claimOrAsk: "When should founders talk to customers?",
+      replyObjective: "Give a concrete timing heuristic",
+      constraints: ["Do not invent metrics"],
+      targetContext: "Founders should talk to customers earlier."
+    });
+  });
+
+  it("ignores invalid speechAct values on intentAnalysis", () => {
+    const result = validateDraftResponse({
+      intentAnalysis: {
+        intent: "Unclear post",
+        confidence: 0.4,
+        needsClarification: true,
+        speechAct: "rant",
+        constraints: []
+      },
+      suggestions: [{ text: "Clarify the constraint.", rationale: "Safe.", confidence: 0.7 }]
+    });
+
+    expect(result.intentAnalysis?.speechAct).toBeUndefined();
+    expect(result.intentAnalysis?.needsClarification).toBe(true);
+  });
+
+  it("parses source-aware stance decisions and permits explicit abstention", () => {
+    const result = validateDraftResponse({
+      abstained: true,
+      abstainReason: "The post leaves no non-generic opening.",
+      intentAnalysis: {
+        intent: "A bare product announcement",
+        confidence: 0.92,
+        needsClarification: false,
+        speechAct: "announcement",
+        shouldReply: false,
+        replyWorthiness: 24,
+        recommendedStance: "abstain",
+        stanceReason: "Any reply would be applause.",
+        constraints: []
+      },
+      suggestions: []
+    });
+
+    expect(result.abstained).toBe(true);
+    expect(result.suggestions).toEqual([]);
+    expect(result.intentAnalysis).toMatchObject({
+      shouldReply: false,
+      replyWorthiness: 24,
+      recommendedStance: "abstain"
+    });
+  });
+
   it("detects comment bait and suppresses high-intent reply scores", () => {
     expect(looksLikeCommentBait("Comment YES if you agree and tag someone who needs this.")).toBe(true);
     expect(looksLikeCommentBait("Local software should make privacy the default.")).toBe(false);

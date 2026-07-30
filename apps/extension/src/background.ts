@@ -1,5 +1,5 @@
 import type { ExtensionMessage } from "./contracts.js";
-import { outcomePayloadForEvent } from "./contracts.js";
+import { feedbackPayloadForEvent, outcomePayloadForEvent } from "./contracts.js";
 import { postJson } from "./api.js";
 import { appendEvent, loadState, saveState } from "./state.js";
 
@@ -14,7 +14,7 @@ chrome.runtime!.onMessage!.addListener((message: ExtensionMessage, sender, sendR
 });
 
 async function handleMessage(message: ExtensionMessage, sender: { tab?: { id?: number }; documentId?: string }): Promise<unknown> {
-  if (message.type === "GET_STATE") return syncPublishedEvents(await loadState());
+  if (message.type === "GET_STATE") return syncEvents(await loadState());
   if (message.type === "SET_QUEUE") {
     const state = await loadState();
     state.queue = message.queue;
@@ -23,7 +23,7 @@ async function handleMessage(message: ExtensionMessage, sender: { tab?: { id?: n
     await saveState(state);
     return state;
   }
-  if (message.type === "RECORD_EVENT") return syncPublishedEvents(await appendEvent(message.event));
+  if (message.type === "RECORD_EVENT") return syncEvents(await appendEvent(message.event));
   if (message.type === "FEED_SCROLL_PROGRESS") return { ok: true };
   if (message.type === "OPEN_SIDE_PANEL" && sender.tab?.id !== undefined) {
     await chrome.sidePanel?.open?.({ tabId: sender.tab.id });
@@ -32,14 +32,20 @@ async function handleMessage(message: ExtensionMessage, sender: { tab?: { id?: n
   return { ok: false };
 }
 
-async function syncPublishedEvents(state: Awaited<ReturnType<typeof loadState>>): Promise<typeof state> {
+async function syncEvents(state: Awaited<ReturnType<typeof loadState>>): Promise<typeof state> {
   let changed = false;
   for (const event of state.events) {
     if (event.syncedAt) continue;
-    const payload = outcomePayloadForEvent(event);
-    if (!payload) continue;
+    const outcome = outcomePayloadForEvent(event);
+    const feedback = feedbackPayloadForEvent(event);
+    if (!outcome && !feedback) {
+      event.syncedAt = new Date().toISOString();
+      changed = true;
+      continue;
+    }
     try {
-      await postJson("/api/outcomes", payload);
+      if (feedback) await postJson("/api/feedback", feedback);
+      if (outcome) await postJson("/api/outcomes", outcome);
       event.syncedAt = new Date().toISOString();
       changed = true;
     } catch {

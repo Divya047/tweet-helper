@@ -2,9 +2,12 @@ import type {
   GenerateCommentRequest,
   GeneratePostRequest,
   GenerateRewriteRequest,
+  IntentAnalysis,
+  DraftSuggestion,
   ScoreVisiblePostsRequest
 } from "@tweet-helper/shared";
 import type { WritingExample } from "./db.js";
+import type { PersonalTasteProfile } from "./style.js";
 
 export interface ChatMessage {
   role: "system" | "user" | "assistant";
@@ -72,10 +75,12 @@ export function buildCommentMessages(
   request: GenerateCommentRequest,
   styleProfileJson: string | undefined,
   examples: WritingExample[],
-  pairedExamples: Array<{sourceText:string;replyText:string}> = []
+  pairedExamples: Array<{sourceText:string;replyText:string}> = [],
+  sourceIntent?: IntentAnalysis,
+  tasteProfile?: PersonalTasteProfile
 ): ChatMessage[] {
   const mode = request.mode === "cheap" ? "cheap" : "standard";
-  const suggestionCount = mode === "cheap" ? 2 : 5;
+  const suggestionCount = mode === "cheap" ? 4 : 5;
   const desiredOutcome = request.desiredOutcome ?? "earn relevant follows";
   return [
     {
@@ -85,7 +90,12 @@ export function buildCommentMessages(
         "Return only valid JSON matching the schema.",
         "Do not harass, dogpile, spam, manipulate engagement, or imply the user read something they did not.",
         "Do not click or submit anything. The user will manually approve any draft.",
-        "Prefer replies that signal peer founder/builder expertise: an implementation detail, constraint, tradeoff, practical caveat, pattern, or well-reasoned question.",
+        "A separate short analysis already classified the source post. Treat sourceIntent as ground truth for what the post is doing and what a useful reply should accomplish.",
+        "Address speechAct/claimOrAsk/replyObjective directly: answer the question, engage the claim, respond to the announcement, etc. Do not fall back to generic peer-expertise filler that ignores that analysis.",
+        "Use sourceIntent.recommendedStance as the default stance. Change it only when the draft would otherwise be false, redundant, or unsupported.",
+        "If sourceIntent.shouldReply is false, do not force expertise theater. Return candidate drafts only for the taste judge to inspect; it may abstain.",
+        "When angle is provided, treat it as a preferred reply strategy within sourceIntent — not a replacement for it.",
+        "Prefer replies that signal peer founder/builder expertise: an implementation detail, constraint, tradeoff, practical caveat, pattern, or well-reasoned question — when that fits the replyObjective.",
         "Never invent facts, links, metrics, credentials, or personal experiences.",
         "Do not default to anecdote openers like 'one time we…', 'we once…', or invented shipping stories. Prefer analytical, practical, or question-led structures unless the user's instructions or past writing supply a real detail to reuse carefully.",
         "When instructions name a reply tone, follow that structure exactly. Do not default to counterexample, exception, or 'but actually' framing unless the tone asks for it.",
@@ -103,8 +113,8 @@ export function buildCommentMessages(
         `Avoid overusing catchphrases from the user's past writing. Do not use the phrase "real flex" unless it appears in the source post or the user's instructions.`,
         "Do not copy or closely paraphrase past tweets; use similarPastWriting only as voice and style reference.",
         "Produce multiple distinct options, not minor paraphrases.",
-        "For 5 reply suggestions: make the first the single strongest recommendation and the next four distinct Explore strategies (specific, constructive disagreement, personal/preference question, and concise/practical).",
-        "For 2 reply suggestions: make 1 safe/on-brand and 1 exploratory with a sharper angle.",
+        "Generate distinct candidates for a separate taste judge. Explore only stances that genuinely fit this source; never manufacture disagreement, a question, or a technical detail for variety.",
+        "The first candidate need not be the winner. Candidate diversity exists to help the judge choose, not to fill a quota.",
         mode === "cheap" ? "Be brief. Minimize rationale length." : ""
       ].join("\n")
     },
@@ -114,6 +124,7 @@ export function buildCommentMessages(
         {
           task: "generate_comment",
           sourcePost: request.sourcePost,
+          sourceIntent: sourceIntent ?? null,
           angle: request.angle ?? "",
           targetAudience: request.audience ?? "the user's intended professional audience",
           contentPillar: request.contentPillar ?? "choose the strongest fit",
@@ -121,9 +132,54 @@ export function buildCommentMessages(
           instructions: request.instructions ?? "",
           regenerationSeed: request.regenerationSeed ?? "initial",
           styleProfile: styleProfileJson ? JSON.parse(styleProfileJson) : null,
+          personalTasteProfile: tasteProfile ?? null,
           similarPastWriting: examples.map(formatExample),
           learnedSourceReplyPairs: pairedExamples,
-          requiredOutput: `Return ${suggestionCount} reply suggestions with text, rationale, confidence. Ensure one suggestion is explicitly exploratory/different.`
+          requiredOutput: `Return ${suggestionCount} reply suggestions with text, rationale, confidence. Suggestions must address sourceIntent. Ensure one suggestion is explicitly exploratory/different.`
+        },
+        null,
+        2
+      )
+    }
+  ];
+}
+
+export function buildTasteJudgeMessages(
+  request: GenerateCommentRequest,
+  sourceIntent: IntentAnalysis,
+  candidates: DraftSuggestion[],
+  tasteProfile: PersonalTasteProfile
+): ChatMessage[] {
+  return [
+    {
+      role: "system",
+      content: [
+        "You are the user's strict reply editor and taste gate.",
+        "Decide whether replying is better than silence, then rank the candidates.",
+        "Return only valid JSON matching the schema.",
+        "A technically correct reply can still be bad: reject predictable, performative, redundant, over-polished, reply-guy, or forced-expertise writing.",
+        "Reward direct source fit, a genuinely distinct contribution, the user's learned voice, and restraint.",
+        "Do not reward disagreement, questions, technicality, or cleverness for their own sake.",
+        "Treat the user's skipped/rejected examples as negative preference evidence, never as text to imitate.",
+        "Treat edited examples and editSignals as stronger evidence than generic style advice.",
+        "Set shouldReply=false when no candidate clears 72/100, the source offers no honest opening, the reply merely restates the post, or silence better matches the user's taste.",
+        "When shouldReply=true, recommendedId must identify the highest-scoring candidate.",
+        "Score sourceFit, novelty, voiceFit, and restraint from 0-100. Overall score is not a simple average; a fatal flaw may dominate.",
+        "Keep reasons and flags terse."
+      ].join("\n")
+    },
+    {
+      role: "user",
+      content: JSON.stringify(
+        {
+          task: "judge_reply_taste",
+          sourcePost: request.sourcePost,
+          sourceIntent,
+          requestedAngle: request.angle ?? "",
+          userInstructions: request.instructions ?? "",
+          desiredOutcome: request.desiredOutcome ?? "earn relevant follows",
+          personalTasteProfile: tasteProfile,
+          candidates
         },
         null,
         2

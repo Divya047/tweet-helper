@@ -26,7 +26,15 @@ describe("audience growth prompts", () => {
       audience: DEFAULT_GROWTH_PREFERENCES.audience,
       contentPillar: "building",
       desiredOutcome: "earn relevant follows"
-    }, undefined, []));
+    }, undefined, [], [], {
+      intent: "Author claims founders wait too long to talk to customers",
+      confidence: 0.9,
+      needsClarification: false,
+      speechAct: "claim",
+      claimOrAsk: "Founders should talk to customers earlier",
+      replyObjective: "Add a concrete timing heuristic or tradeoff",
+      constraints: []
+    }));
     const scoring = JSON.stringify(buildScoreMessages({
       posts: [{ id: "1", text: "Founders should talk to customers earlier." }],
       audience: DEFAULT_GROWTH_PREFERENCES.audience,
@@ -36,6 +44,9 @@ describe("audience growth prompts", () => {
 
     expect(reply).toContain("complete thought that is useful even when read on its own");
     expect(reply).toContain("peer founder/builder expertise");
+    expect(reply).toContain("sourceIntent");
+    expect(reply).toContain("speechAct/claimOrAsk/replyObjective");
+    expect(reply).toContain("when that fits the replyObjective");
     expect(reply).toContain("Never invent facts");
     expect(reply).toContain("Do not default to anecdote openers");
     expect(reply).toContain("Do not default to counterexample");
@@ -43,9 +54,7 @@ describe("audience growth prompts", () => {
     expect(reply).toContain("Great point");
     expect(reply).toContain("It's not X, it's Y");
     expect(reply).toContain("Sound like a specific person typing quickly on X");
-    expect(reply).toContain(
-      "Prefer replies that signal peer founder/builder expertise: an implementation detail, constraint, tradeoff, practical caveat, pattern, or well-reasoned question."
-    );
+    expect(reply).toContain("Suggestions must address sourceIntent");
     expect(reply).toContain("earn relevant follows");
     expect(scoring).toContain(DEFAULT_GROWTH_PREFERENCES.audience);
     expect(scoring).toContain("high metrics alone is not a reason");

@@ -8,11 +8,10 @@ import {
   type ScoreVisiblePostsResponse
 } from "@tweet-helper/shared";
 import { LONG_REQUEST_TIMEOUT_MS, postJson } from "./api.js";
-import { activitySnapshot } from "./activity.js";
-import type { ComposerContext, Draft, ExtensionMessage, ExtensionState, FeedTrend, QueueItem } from "./contracts.js";
+import { normalizeActivity } from "./activity.js";
+import type { ComposerContext, Draft, ExtensionMessage, ExtensionState, FeedTrend, QueueInsertResult, QueueItem } from "./contracts.js";
 import {
-  assignReplyStyles,
-  buildReplyDraftInstructions,
+  buildTasteAwareReplyInstructions,
   buildSingleTrendBrief,
   deriveFeedTrends,
   FIND_HIGH_INTENT,
@@ -69,8 +68,8 @@ function render(): void {
   else renderExplore();
 }
 function renderToday(): void {
-  const snap = activitySnapshot(state.activity);
-  app.innerHTML = `<h1>Today</h1><div class="goals"><div class="card goal"><span>Posts</span><strong>${snap.posts}<small> / ${snap.goals.posts}</small></strong><div class="bar"><i style="width:${snap.postProgress * 100}%"></i></div><span class="muted">Soft goal — keep going if it serves you.</span></div><div class="card goal"><span>Replies</span><strong>${snap.replies}<small> / ${snap.goals.replies}</small></strong><div class="bar"><i style="width:${snap.replyProgress * 100}%"></i></div><span class="muted">Soft goal — never a lockout.</span></div></div><div class="card"><strong>${state.queue.length} queued</strong><span class="muted">Queue and activity persist across tabs and panel reloads.</span></div>`;
+  const activity = normalizeActivity(state.activity);
+  app.innerHTML = `<h1>Today</h1><div class="goals"><div class="card goal"><span>Posts inserted</span><strong>${activity.posts}</strong></div><div class="card goal"><span>Replies inserted</span><strong>${activity.replies}</strong></div></div><div class="card"><strong>${state.queue.length} queued</strong><span class="muted">Counts update when you use Tweet Helper to insert a draft.</span></div>`;
 }
 function renderQueue(): void {
   app.innerHTML = `<h1>Queue</h1><button id="findReplies" class="primary">Find 8 high-intent replies</button><span class="muted">Auto-scrolls your X feed, scores posts, and queues the top ${FIND_HIGH_INTENT.targetReplies}. Open a source post, hit Reply on X, then Insert.</span>${state.queue.length ? state.queue.map((item, index) => renderQueueCard(item, index)).join("") : `<div class="card muted">No drafts queued. Explore post alternatives, or find high-intent replies.</div>`}`;
@@ -236,18 +235,20 @@ async function findHighIntentReplies(): Promise<void> {
     const [tab] = await chrome.tabs!.query!({ active: true, currentWindow: true });
     if (!tab?.id) return setStatus("Open X first.");
     await persistGrowthPreferences();
-    const existing = new Set(
-      state.queue
-        .filter((item) => item.context.kind === "reply")
-        .flatMap((item) => [item.context.target?.id, item.context.target?.text].filter((value): value is string => !!value))
-    );
-    const targetCount = Math.min(FIND_HIGH_INTENT.targetReplies, Math.max(0, 24 - existing.size));
-    if (targetCount === 0) return setStatus("Reply queue is full (24). Skip some drafts first.");
+    const replyQueue = state.queue.filter((item) => item.context.kind === "reply");
+    const excludeIds = [
+      ...new Set(
+        replyQueue.flatMap((item) =>
+          [item.context.target?.id, item.context.target?.text].filter((value): value is string => !!value)
+        )
+      )
+    ];
+    const targetCount = FIND_HIGH_INTENT.targetReplies;
 
     setStatus(`Scrolling feed to collect up to ${FIND_HIGH_INTENT.maxCandidates} posts…`);
     const collected = await chrome.tabs!.sendMessage!(tab.id, {
       type: "COLLECT_FEED_POSTS",
-      excludeIds: [...existing],
+      excludeIds,
       maxCandidates: FIND_HIGH_INTENT.maxCandidates,
       maxScrolls: FIND_HIGH_INTENT.maxScrolls
     } satisfies ExtensionMessage).catch(() => undefined) as { posts?: Array<{ id?: string; author?: string; text: string; url?: string }>; scrolls?: number } | undefined;
@@ -282,10 +283,8 @@ async function findHighIntentReplies(): Promise<void> {
     }
 
     setStatus(`Drafting top ${opportunities.length} high-intent ${opportunities.length === 1 ? "reply" : "replies"}…`);
-    const styles = assignReplyStyles(opportunities.length);
     let drafted = 0;
     const results = await mapPool(opportunities, 3, async ({ post, score }, index) => {
-      const style = styles[index]!;
       const result = await postJson<ApiEnvelope<DraftResponse>>("/api/generate/comment", {
         sourcePost: post,
         angle: score.suggestedAngle,
@@ -294,8 +293,8 @@ async function findHighIntentReplies(): Promise<void> {
         desiredOutcome: growth.outcome,
         mode: "cheap",
         model: "standard",
-        instructions: buildReplyDraftInstructions(style, growth.outcome),
-        regenerationSeed: `${state.sessionId}:reply:${style.tone.label}:${style.voice.label}:${post.id ?? index}`
+        instructions: buildTasteAwareReplyInstructions(growth.outcome),
+        regenerationSeed: `${state.sessionId}:reply:taste:${post.id ?? index}`
       }, { timeoutMs: LONG_REQUEST_TIMEOUT_MS });
       drafted += 1;
       setStatus(`Drafting replies… ${drafted}/${opportunities.length}`);
@@ -306,8 +305,7 @@ async function findHighIntentReplies(): Promise<void> {
     results.forEach((result, index) => {
       const suggestion = result.data.suggestions[0];
       const opportunity = opportunities[index];
-      const style = styles[index];
-      if (!suggestion || !opportunity || !style) return;
+      if (!suggestion || !opportunity || result.data.abstained) return;
       const sourceSummary =
         opportunity.score.topicSummary?.trim()
         || truncateText(opportunity.post.text, 80);
@@ -316,7 +314,7 @@ async function findHighIntentReplies(): Promise<void> {
         draft: {
           id: suggestion.id,
           text: suggestion.text,
-          strategy: `${opportunity.score.score}/100 · ${style.tone.label} · ${style.voice.label} · ${opportunity.score.suggestedAngle}`,
+          strategy: `${opportunity.score.score}/100 · ${suggestion.strategy ?? result.data.tasteDecision?.stance ?? "Taste pick"} · ${opportunity.score.suggestedAngle}`,
           recommended: true
         },
         context: { kind: "reply", currentText: "", target: opportunity.post },
@@ -385,6 +383,8 @@ async function openQueuePost(id: string): Promise<void> {
   const item = state.queue.find((entry) => entry.id === id);
   const target = item?.context.target;
   if (!item || !target) return setStatus("No source post on this draft.");
+  state.activeQueueItemId = item.id;
+  await persist();
   const [tab] = await chrome.tabs!.query!({ active: true, currentWindow: true });
   if (!tab?.id) return setStatus("Open X first.");
   const result = await chrome.tabs!.sendMessage!(tab.id, { type: "OPEN_SOURCE_POST", target } satisfies ExtensionMessage).catch(() => undefined) as { found?: boolean } | undefined;
@@ -401,10 +401,18 @@ async function insertQueue(id: string): Promise<void> {
   const item = state.queue.find((entry) => entry.id === id);
   const [tab] = await chrome.tabs!.query!({ active: true, currentWindow: true });
   if (!item || !tab?.id) return;
-  await chrome.tabs!.sendMessage!(tab.id, { type: "INSERT_QUEUE_NEXT", item } satisfies ExtensionMessage);
+  const result = await chrome.tabs!.sendMessage!(
+    tab.id,
+    { type: "INSERT_QUEUE_NEXT", item } satisfies ExtensionMessage
+  ).catch(() => undefined) as QueueInsertResult | undefined;
+  if (!result?.inserted) {
+    setStatus(result?.reason ?? "Could not insert. Focus the correct X composer and try again.");
+    return;
+  }
   state.queue = state.queue.filter((entry) => entry.id !== id);
   setActiveToFirst();
   await persist();
+  setStatus(item.context.kind === "reply" ? "Reply inserted." : "Post inserted.");
   renderQueue();
 }
 async function removeQueue(id: string): Promise<void> {

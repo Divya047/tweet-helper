@@ -1,5 +1,5 @@
 import type { VisiblePost } from "@tweet-helper/shared";
-import type { ComposerContext, PostContext } from "./contracts.js";
+import type { ComposerContext, ComposerKind, PostContext } from "./contracts.js";
 
 const TWEET_TEXT_SELECTOR = '[data-testid="tweetText"]';
 const TWEET_ARTICLE_SELECTOR = 'article[data-testid="tweet"], article';
@@ -26,7 +26,10 @@ export function findTweetArticle(root: ParentNode, target: Pick<PostContext, "id
   const articles = [...root.querySelectorAll<HTMLElement>(TWEET_ARTICLE_SELECTOR)];
   const statusId = (target.id && /^\d+$/.test(target.id) ? target.id : undefined) ?? extractStatusId(target.url);
   if (statusId) {
-    const byId = articles.find((article) => extractStatusId(extractStatusUrl(article)) === statusId);
+    const byId = articles.find((article) => {
+      const textNode = getTweetTextNodes(article)[0];
+      return extractStatusId(extractStatusUrl(article, textNode)) === statusId;
+    });
     if (byId) return byId;
   }
   const needle = target.text?.replace(/\s+/g, " ").trim();
@@ -165,16 +168,17 @@ export function extractVisiblePosts(root: ParentNode = document): VisiblePost[] 
   const seen = new Set<string>();
 
   for (const article of articles) {
-    const text = extractPostText(article);
+    const textNode = getTweetTextNodes(article)[0];
+    const text = textNode ? normalizeElementText(textNode) : extractPostText(article);
     if (!text || text.length < 20) {
       continue;
     }
-    const url = extractStatusUrl(article);
+    const url = extractStatusUrl(article, textNode);
     const id = extractStatusId(url) ?? `visible-${posts.length}`;
     if (seen.has(id)) {
       continue;
     }
-    const author = extractAuthor(article);
+    const author = extractAuthor(article, textNode);
     seen.add(id);
     posts.push({
       id,
@@ -324,13 +328,49 @@ export function getComposerContext(composer: HTMLElement): ComposerContext {
   const target = article ? posts[0] : posts.at(-1);
   const parent = !article && posts.length > 1 ? posts.at(-2) : undefined;
   const quoted = article && posts.length > 1 ? posts[1] : undefined;
+  const kind = inferComposerKind(composer, !!target);
   return {
-    kind: target ? "reply" : "post",
+    kind,
     currentText: getComposerText(composer),
+    // Keep source/quoted text for drafting even when soft-goal kind is "post" (quotes).
     ...(target ? { target } : {}),
     ...(parent && parent.id !== target?.id ? { parent } : {}),
     ...(quoted && quoted.id !== target?.id ? { quoted } : {})
   };
+}
+
+/** Infer post vs reply for drafting and insertion context. X often labels reply submit as "Post". */
+export function inferComposerKind(composer: HTMLElement, hasTarget: boolean): ComposerKind {
+  const scope =
+    composer.closest<HTMLElement>(`${DIALOG_SELECTOR}, ${TWEET_ARTICLE_SELECTOR}`)
+    ?? composer.closest<HTMLElement>('[data-testid="toolBar"]')?.parentElement
+    ?? composer.parentElement
+    ?? composer;
+  const buttons = [
+    ...scope.querySelectorAll<HTMLElement>('[data-testid="tweetButton"], [data-testid="tweetButtonInline"]')
+  ];
+  const nearby = buttons.find((button) => !composer.contains(button)) ?? buttons[0];
+  const label = nearby ? normalizeElementText(nearby).toLowerCase() : "";
+  if (/\breply\b/.test(label)) return "reply";
+  if (/\bquote\b/.test(label)) return "post";
+  const replyMarker = scope.querySelector(
+    '[data-testid="reply"], [aria-label*="Replying to" i], [aria-label*="Reply to" i]'
+  );
+  if (replyMarker) return "reply";
+  if (!hasTarget) return "post";
+  // Source tweet above the composer ⇒ reply. Attachment below (quote) ⇒ post.
+  // Do not trust a bare "Post" label — X uses it for replies too.
+  return hasTweetTextAboveComposer(composer, scope) ? "reply" : "post";
+}
+
+function hasTweetTextAboveComposer(composer: HTMLElement, scope: HTMLElement): boolean {
+  const composerTop = composer.getBoundingClientRect().top;
+  return getTweetTextNodes(scope)
+    .filter((node) => !composer.contains(node))
+    .some((node) => {
+      const rect = node.getBoundingClientRect();
+      return rect.height > 0 && rect.bottom <= composerTop + 4;
+    });
 }
 
 export function isEmptyNewPost(composer: HTMLElement): boolean {
@@ -373,14 +413,23 @@ function extractStatusUrl(container: HTMLElement, nearNode?: HTMLElement): strin
   const anchors = [...container.querySelectorAll<HTMLAnchorElement>('a[href*="/status/"]')].filter((link) =>
     /\/status\/\d+/.test(link.href)
   );
+  const author = extractAuthor(container, nearNode ?? getTweetTextNodes(container)[0]);
+  const authorAnchors = author
+    ? anchors.filter((anchor) => statusAuthor(anchor.href)?.toLowerCase() === author.toLowerCase())
+    : [];
+  const candidates = authorAnchors.length ? authorAnchors : anchors;
   const anchor = nearNode
-    ? findClosestElementAfter(anchors, nearNode) ?? findClosestElementBefore(anchors, nearNode) ?? anchors[0]
-    : anchors[0];
+    ? findClosestElementBefore(candidates, nearNode) ?? findClosestElementAfter(candidates, nearNode) ?? candidates[0]
+    : candidates[0];
   return anchor?.href;
 }
 
 function extractStatusId(url: string | undefined): string | undefined {
   return url?.match(/\/status\/(\d+)/)?.[1];
+}
+
+function statusAuthor(url: string): string | undefined {
+  return url.match(/(?:x\.com|twitter\.com)?\/([A-Za-z0-9_]+)\/status\/\d+/i)?.[1];
 }
 
 function extractAuthor(container: HTMLElement, nearNode?: HTMLElement): string | undefined {

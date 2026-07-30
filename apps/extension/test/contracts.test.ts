@@ -6,10 +6,12 @@ import {
   TREND_SCAN,
   assignReplyStyles,
   buildReplyDraftInstructions,
+  buildTasteAwareReplyInstructions,
   buildSingleTrendBrief,
   deriveFeedTrends,
   mapNativeExplore,
   outcomePayloadForEvent,
+  feedbackPayloadForEvent,
   REPLY_TONES,
   REPLY_VOICES,
   samplePostsForScoring,
@@ -47,7 +49,7 @@ describe("MV3 side-panel and accessibility contracts", () => {
     expect(cards[0]).toMatchObject({ id: "r1", recommended: true, strategy: "Recommended" });
     expect(cards.slice(1).every((card) => !card.recommended)).toBe(true);
   });
-  it("assigns shuffled reply tones and voices so queue drafts vary structure and cadence", () => {
+  it("retains legacy explicit tone helpers for compatibility", () => {
     expect(REPLY_TONES).toHaveLength(8);
     expect(REPLY_VOICES).toHaveLength(8);
     expect(REPLY_TONES.map((tone) => tone.label)).toEqual([
@@ -82,6 +84,32 @@ describe("MV3 side-panel and accessibility contracts", () => {
     expect(instructions).toContain(`Reply tone for this draft: ${assigned[0]!.tone.label}.`);
     expect(instructions).toContain(`Voice register for this draft: ${assigned[0]!.voice.label}.`);
     expect(instructions).toContain("generic AI openers");
+  });
+  it("uses source-aware taste instructions in live reply generation", () => {
+    const instructions = buildTasteAwareReplyInstructions("start a useful conversation");
+    expect(instructions).toContain("Choose the stance from the source post");
+    expect(instructions).toContain("Prefer no reply");
+    expect(instructions).not.toContain("Reply tone for this draft");
+  });
+  it("maps edits, skips, and publishes into backend taste feedback", () => {
+    const context = { kind: "reply" as const, currentText: "", target: { text: "Source claim" } };
+    expect(feedbackPayloadForEvent({
+      clientEventId: "skip-1",
+      kind: "skip",
+      occurredAt: new Date().toISOString(),
+      suggestionId: "s1",
+      originalText: "Love this.",
+      context
+    })).toMatchObject({ decision: "skipped", originalText: "Love this.", kind: "comment" });
+    expect(feedbackPayloadForEvent({
+      clientEventId: "publish-1",
+      kind: "published",
+      occurredAt: new Date().toISOString(),
+      suggestionId: "s2",
+      originalText: "Maybe caching is hard.",
+      finalText: "Cache invalidation is the product constraint.",
+      context
+    })).toMatchObject({ decision: "edited", suggestionId: "s2" });
   });
   it("maps verified Chrome publishes to the durable outcome API contract", () => {
     expect(outcomePayloadForEvent({

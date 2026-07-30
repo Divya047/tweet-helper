@@ -117,6 +117,7 @@ The keyboard supports `Post`, `Reply`, and `Rewrite`. It inserts text only after
 - `POST /api/generate/rewrite`
 - `POST /api/score/visible-posts`
 - `POST /api/feedback`
+- `GET /api/taste-profile`
 - `GET /api/settings`
 - `PUT /api/settings`
 

@@ -1,7 +1,13 @@
 import type { ClientEvent, ComposerContext } from "./contracts.js";
 import { stableId } from "./contracts.js";
 
-export interface PublishAttempt { context: ComposerContext; finalText: string; startedAt: number; suggestionId?: string }
+export interface PublishAttempt {
+  context: ComposerContext;
+  finalText: string;
+  startedAt: number;
+  suggestionId?: string;
+  originalText?: string;
+}
 
 export class PublishTracker {
   private attempt: PublishAttempt | undefined;
@@ -14,6 +20,7 @@ export class PublishTracker {
     return {
       clientEventId: stableId("published"), kind: "published", occurredAt: new Date().toISOString(),
       ...(attempt.suggestionId ? { suggestionId: attempt.suggestionId } : {}),
+      ...(attempt.originalText ? { originalText: attempt.originalText } : {}),
       ...(externalId ? { externalId } : {}), finalText: attempt.finalText, context: attempt.context
     };
   }

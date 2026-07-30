@@ -8,6 +8,7 @@ import {
   validateGenerateRewriteRequest,
   enrichTopicSummaries,
   suppressCommentBaitScores,
+  parseIntentAnalysis,
   validateDraftResponse,
   validateScoreVisiblePostsResponse,
   type DraftResponse,
@@ -17,7 +18,9 @@ import {
   type GenerateRewriteRequest,
   type IntentAnalysis,
   type OutcomeRequest,
-  type ScoreVisiblePostsRequest
+  type ReplyStance,
+  type ScoreVisiblePostsRequest,
+  type TasteDecision
 } from "@tweet-helper/shared";
 import { parseTweetsJs, parseXArchiveZip } from "./archive.js";
 import { assertWithinBudget } from "./budget.js";
@@ -57,14 +60,22 @@ import {
   buildPostMessages,
   buildRewriteMessages,
   buildScoreMessages,
+  buildTasteJudgeMessages,
   type ChatMessage
 } from "./prompts.js";
-import { RECENT_ARCHIVE_EXAMPLE_WINDOW_MS, rebuildStyleProfile, selectStyleExamples } from "./style.js";
+import {
+  RECENT_ARCHIVE_EXAMPLE_WINDOW_MS,
+  getPersonalTasteProfile,
+  rebuildPersonalTasteProfile,
+  rebuildStyleProfile,
+  selectStyleExamples
+} from "./style.js";
 import {
   cacheKeyFor,
   createTogetherClient,
   draftResponseSchema,
   scoreResponseSchema,
+  tasteDecisionSchema,
   type JsonCompletionRequest,
   type JsonCompletionResult,
   type TogetherClient
@@ -135,17 +146,21 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Bui
     data: updateSettings(db, request.body ?? {})
   }));
 
+  app.get("/api/taste-profile", async () => ({ data: getPersonalTasteProfile(db) }));
+
   app.post<{ Body: ImportArchiveBody }>("/api/import/x-archive", async (request) => {
     const body = request.body ?? {};
     const result = importArchiveInput(body);
     const imported = upsertWritingExamples(db, result.examples);
     const reconciledOutcomes = reconcileArchiveOutcomes(db, result.examples);
     const styleProfile = rebuildStyleProfile(db);
+    const tasteProfile = rebuildPersonalTasteProfile(db);
     return {
       data: {
         imported,
         filesRead: result.filesRead,
         styleProfile,
+        tasteProfile,
         reconciledOutcomes
       }
     };
@@ -192,8 +207,9 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Bui
     const mode = body.mode === "cheap" ? "cheap" : "standard";
     const requestedModel = mode === "cheap" || body.model === "standard" ? undefined : ADVANCED_MODEL;
     const styleProfile = getStyleProfile(db);
-    // Heuristic intent only — a second LLM round-trip made reply drafting feel stuck.
-    const analysis = heuristicIntent(body.sourcePost.text, body.sourcePost);
+    const tasteProfile = getPersonalTasteProfile(db);
+    // Short separate pass: understand the source before drafting replies.
+    const analysis = await analyzeIntent(db, togetherClient, body.sourcePost.text, body.sourcePost, tasteProfile);
     const examples = selectStyleExamples(
       db,
       `${body.sourcePost.text} ${body.angle ?? ""} ${body.instructions ?? ""}`,
@@ -201,8 +217,8 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Bui
     );
     const pairedExamples=getPairedReplyExamples(db,body.sourcePost.text);
     const recentArchiveExamples = getRecentXArchiveExamples(db, recentArchiveCutoff());
-    const messages = buildCommentMessages(body, styleProfile, examples,pairedExamples);
-    const response = await runCachedJsonGeneration({
+    const messages = buildCommentMessages(body, styleProfile, examples, pairedExamples, analysis, tasteProfile);
+    const generated = await runCachedJsonGeneration({
       db,
       togetherClient,
       endpoint: "generate_comment",
@@ -213,19 +229,30 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Bui
         examples: examples.map((example) => example.id),
         pairedExamples,
         blockedExamples: recentArchiveExamples.map((example) => example.id),
+        intent: analysis,
         model: requestedModel ?? "default"
       },
       request: {
         messages,
         schemaName: "DraftResponse",
         schema: draftResponseSchema,
-        maxTokens: mode === "cheap" ? 340 : 650,
+        maxTokens: mode === "cheap" ? 620 : 760,
         temperature: mode === "cheap" ? 0.6 : 0.75,
         ...(requestedModel ? { model: requestedModel } : {})
       },
-      validate: (value) => enrichDraftResponse(removeRecentArchiveCopies(validateDraftResponse(value), recentArchiveExamples),body.sourcePost.text,body.sourcePost,analysis)
+      validate: (value) =>
+        enrichDraftResponse(
+          removeRecentArchiveCopies(validateDraftResponse(value), recentArchiveExamples),
+          body.sourcePost.text,
+          body.sourcePost,
+          analysis
+        )
     });
-    return response;
+    const judged = await judgeReplyTaste(db, togetherClient, body, analysis, tasteProfile, generated.data);
+    return {
+      data: applyTasteDecision(generated.data, judged.data, analysis),
+      meta: combineGenerationMeta(generated.meta, judged.meta)
+    };
   });
 
   app.post<{ Body: GenerateRewriteRequest }>("/api/generate/rewrite", async (request) => {
@@ -345,6 +372,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Bui
       rebuildStyleProfile(db);
       learned = true;
     }
+    rebuildPersonalTasteProfile(db);
 
     return { data: { id, learned } };
   });
@@ -414,7 +442,10 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Bui
       context: outcomeContext,
       ...(body.contentKind ? { contentKind: body.contentKind } : {})
     });
-    if (result.created) rebuildStyleProfile(db);
+    if (result.created) {
+      rebuildStyleProfile(db);
+      rebuildPersonalTasteProfile(db);
+    }
     return { data: result };
   });
   app.get("/api/progress/today",async()=>({data:getTodayProgress(db)}));
@@ -450,7 +481,7 @@ function importArchiveInput(body: ImportArchiveBody): ImportArchiveParsed {
 
 function isProtectedApiPath(url: string): boolean {
   const path = url.split("?")[0] ?? url;
-  return path.startsWith("/api/generate/") || path.startsWith("/api/work-") || path.startsWith("/api/progress/") || path === "/api/outcomes" || path === "/api/feedback" || path === "/api/settings";
+  return path.startsWith("/api/generate/") || path.startsWith("/api/work-") || path.startsWith("/api/progress/") || path === "/api/outcomes" || path === "/api/feedback" || path === "/api/settings" || path === "/api/taste-profile";
 }
 
 function isEasyQuestion(post: GenerateCommentRequest["sourcePost"]): boolean {
@@ -486,7 +517,32 @@ function removeRecentArchiveCopies(response: DraftResponse, recentExamples: Writ
   if (suggestions.length === 0) {
     throw new Error("Generated drafts copied recent archive tweets. Try again with more specific instructions.");
   }
-  return { suggestions };
+  return {
+    ...response,
+    suggestions
+  };
+}
+
+function withSourceContext(
+  analysis: IntentAnalysis | undefined,
+  source?: GenerateCommentRequest["sourcePost"]
+): IntentAnalysis | undefined {
+  if (!analysis) return undefined;
+  if (!source) return analysis;
+  return {
+    ...analysis,
+    targetContext: analysis.targetContext?.trim() || source.text,
+    ...(source.parentPost
+      ? { parentContext: analysis.parentContext?.trim() || source.parentPost.text }
+      : analysis.parentContext
+        ? { parentContext: analysis.parentContext }
+        : {}),
+    ...(source.quotedPost
+      ? { quotedContext: analysis.quotedContext?.trim() || source.quotedPost.text }
+      : analysis.quotedContext
+        ? { quotedContext: analysis.quotedContext }
+        : {})
+  };
 }
 
 function enrichDraftResponse(response: DraftResponse, input: string, source?: GenerateCommentRequest["sourcePost"], analyzed?: IntentAnalysis): DraftResponse {
@@ -505,16 +561,242 @@ function enrichDraftResponse(response: DraftResponse, input: string, source?: Ge
   };
 }
 
-async function analyzeIntent(db: AppDatabase, togetherClient: TogetherClient, input: string, source?: GenerateCommentRequest["sourcePost"]): Promise<IntentAnalysis> {
-  const fallback = () => heuristicIntent(input, source);
+async function judgeReplyTaste(
+  db: AppDatabase,
+  togetherClient: TogetherClient,
+  body: GenerateCommentRequest,
+  analysis: IntentAnalysis,
+  tasteProfile: ReturnType<typeof getPersonalTasteProfile>,
+  response: DraftResponse
+) {
+  const fallback = () => fallbackTasteDecision(response, analysis);
+  if (response.suggestions.length === 0) {
+    return {
+      data: fallback(),
+      meta: emptyGenerationMeta(togetherClient.defaultModel)
+    };
+  }
   try {
-    const result=await runCachedJsonGeneration({db,togetherClient,endpoint:"analyze_intent",cacheInput:{input,source},request:{model:DEFAULT_MODEL,messages:[
-      {role:"system",content:"Analyze intent and draft strategy. Separate target, parent, and quoted context. Mark needsClarification when confidence is below 0.5. Return JSON only."},
-      {role:"user",content:JSON.stringify({input,source})}],schemaName:"IntentAnalysis",schema:{type:"object",properties:{intent:{type:"string"},confidence:{type:"number"},needsClarification:{type:"boolean"},targetContext:{type:"string"},parentContext:{type:"string"},quotedContext:{type:"string"},constraints:{type:"array",items:{type:"string"}}},required:["intent","confidence","needsClarification","constraints"]},maxTokens:350,temperature:.2},validate:(value)=>{
-        if (!value || typeof value !== "object") return fallback(); const item=value as Record<string,unknown>;
-        if (typeof item.intent !== "string" || typeof item.confidence !== "number") return fallback();
-        return {intent:item.intent,confidence:Math.max(0,Math.min(1,item.confidence)),needsClarification:item.needsClarification===true || item.confidence<.5,constraints:Array.isArray(item.constraints)?item.constraints.filter((x):x is string=>typeof x==="string"):[],...(typeof item.targetContext==="string"?{targetContext:item.targetContext}:{}),...(typeof item.parentContext==="string"?{parentContext:item.parentContext}:{}),...(typeof item.quotedContext==="string"?{quotedContext:item.quotedContext}:{})};
-      }});
+    return await runCachedJsonGeneration({
+      db,
+      togetherClient,
+      endpoint: "judge_reply_taste",
+      cacheable: false,
+      cacheInput: {
+        body,
+        analysis,
+        tasteProfile,
+        suggestions: response.suggestions
+      },
+      request: {
+        messages: buildTasteJudgeMessages(body, analysis, response.suggestions, tasteProfile),
+        schemaName: "TasteDecision",
+        schema: tasteDecisionSchema,
+        maxTokens: 700,
+        temperature: 0.1,
+        ...(body.mode !== "cheap" && body.model === "advanced" ? { model: ADVANCED_MODEL } : {})
+      },
+      validate: (value) => parseTasteDecision(value, response, analysis) ?? fallback()
+    });
+  } catch {
+    return {
+      data: fallback(),
+      meta: emptyGenerationMeta(togetherClient.defaultModel)
+    };
+  }
+}
+
+function parseTasteDecision(
+  value: unknown,
+  response: DraftResponse,
+  analysis: IntentAnalysis
+): TasteDecision | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const item = value as Record<string, unknown>;
+  if (typeof item.shouldReply !== "boolean" || typeof item.reason !== "string" || !Array.isArray(item.evaluations)) {
+    return undefined;
+  }
+  const candidateIds = new Set(response.suggestions.map((suggestion) => suggestion.id));
+  const evaluations = item.evaluations.flatMap((raw) => {
+    if (!raw || typeof raw !== "object") return [];
+    const evaluation = raw as Record<string, unknown>;
+    if (typeof evaluation.suggestionId !== "string" || !candidateIds.has(evaluation.suggestionId)) return [];
+    const score = boundedNumber(evaluation.score, 0, 100);
+    if (score === undefined) return [];
+    return [{
+      suggestionId: evaluation.suggestionId,
+      score,
+      sourceFit: boundedNumber(evaluation.sourceFit, 0, 100) ?? score,
+      novelty: boundedNumber(evaluation.novelty, 0, 100) ?? score,
+      voiceFit: boundedNumber(evaluation.voiceFit, 0, 100) ?? score,
+      restraint: boundedNumber(evaluation.restraint, 0, 100) ?? score,
+      reasons: stringArray(evaluation.reasons, 3),
+      flags: stringArray(evaluation.flags, 4)
+    }];
+  });
+  if (!evaluations.length) return undefined;
+  const best = [...evaluations].sort((left, right) => right.score - left.score)[0]!;
+  const stances: readonly ReplyStance[] = [
+    "answer", "agree-and-add", "clarify", "challenge", "contextualize", "ask", "acknowledge", "abstain"
+  ];
+  const stance =
+    typeof item.stance === "string" && stances.includes(item.stance as ReplyStance)
+      ? (item.stance as ReplyStance)
+      : analysis.recommendedStance;
+  const recommendedScore = best.score;
+  const shouldReply =
+    item.shouldReply
+    && analysis.shouldReply !== false
+    && recommendedScore >= 72;
+  return {
+    shouldReply,
+    reason: item.reason.trim() || (shouldReply ? "Best candidate clears the taste bar." : "Silence is stronger."),
+    confidence: boundedNumber(item.confidence, 0, 1) ?? 0.7,
+    ...(shouldReply ? { recommendedId: best.suggestionId } : {}),
+    ...(stance ? { stance: shouldReply ? stance : "abstain" } : {}),
+    evaluations
+  };
+}
+
+function fallbackTasteDecision(response: DraftResponse, analysis: IntentAnalysis): TasteDecision {
+  const evaluations = response.suggestions.map((suggestion) => {
+    const generic = /^(great point|love this|so true|exactly|one thing i'?d add|curious how)\b/i.test(suggestion.text);
+    const stock = /\b(the real unlock|here'?s the thing|at the end of the day)\b/i.test(suggestion.text);
+    const score = Math.max(0, Math.min(100, Math.round(suggestion.confidence * 100) - (generic ? 35 : 0) - (stock ? 20 : 0)));
+    return {
+      suggestionId: suggestion.id,
+      score,
+      sourceFit: score,
+      novelty: Math.max(0, score - (generic ? 20 : 0)),
+      voiceFit: score,
+      restraint: Math.max(0, score - (stock ? 15 : 0)),
+      reasons: generic ? ["Generic opener"] : ["Best available candidate"],
+      flags: [...(generic ? ["generic"] : []), ...(stock ? ["stock_phrase"] : [])]
+    };
+  });
+  const best = [...evaluations].sort((left, right) => right.score - left.score)[0];
+  const shouldReply = analysis.shouldReply !== false && !!best && best.score >= 72;
+  return {
+    shouldReply,
+    reason: shouldReply ? "Best candidate clears the local taste fallback." : analysis.stanceReason ?? "No candidate clears the taste bar.",
+    confidence: analysis.confidence,
+    ...(shouldReply && best ? { recommendedId: best.suggestionId } : {}),
+    stance: shouldReply ? analysis.recommendedStance ?? "contextualize" : "abstain",
+    evaluations
+  };
+}
+
+function applyTasteDecision(response: DraftResponse, decision: TasteDecision, analysis: IntentAnalysis): DraftResponse {
+  const ranked = [...response.suggestions].sort((left, right) => {
+    const leftScore = decision.evaluations.find((item) => item.suggestionId === left.id)?.score ?? 0;
+    const rightScore = decision.evaluations.find((item) => item.suggestionId === right.id)?.score ?? 0;
+    return rightScore - leftScore;
+  });
+  const winner = ranked.find((suggestion) => suggestion.id === decision.recommendedId) ?? ranked[0];
+  if (!decision.shouldReply || !winner) {
+    return {
+      suggestions: [],
+      explore: [],
+      intentAnalysis: analysis,
+      strategies: [],
+      abstained: true,
+      abstainReason: decision.reason,
+      tasteDecision: decision
+    };
+  }
+  const selected = {
+    ...winner,
+    strategy: decision.stance ?? analysis.recommendedStance ?? winner.strategy ?? "source-aware"
+  };
+  return {
+    suggestions: [selected],
+    recommendedId: selected.id,
+    recommendation: selected,
+    explore: [],
+    intentAnalysis: analysis,
+    strategies: [{
+      id: `strategy-${selected.id}`,
+      label: "Taste pick",
+      angle: decision.reason,
+      tone: decision.stance ?? analysis.recommendedStance ?? "source-aware",
+      exploratory: false
+    }],
+    tasteDecision: decision
+  };
+}
+
+async function analyzeIntent(
+  db: AppDatabase,
+  togetherClient: TogetherClient,
+  input: string,
+  source?: GenerateCommentRequest["sourcePost"],
+  tasteProfile?: ReturnType<typeof getPersonalTasteProfile>
+): Promise<IntentAnalysis> {
+  const fallback = () => withSourceContext(heuristicIntent(input, source), source) ?? heuristicIntent(input, source);
+  try {
+    const result = await runCachedJsonGeneration({
+      db,
+      togetherClient,
+      endpoint: "analyze_intent",
+      cacheInput: { input, source, tasteProfile },
+      request: {
+        model: DEFAULT_MODEL,
+        messages: [
+          {
+            role: "system",
+            content: source
+              ? [
+                  "Analyze the source post a user may reply to. Be brief and concrete.",
+                  "Classify speechAct as one of: question, claim, announcement, advice, opinion, complaint, other.",
+                  "Paraphrase claimOrAsk in one line. State replyObjective as what a useful reply should accomplish.",
+                  "Judge whether the user has an honest, non-generic reason to reply. Set shouldReply, replyWorthiness 0-100, recommendedStance, and stanceReason.",
+                  "recommendedStance must be one of: answer, agree-and-add, clarify, challenge, contextualize, ask, acknowledge, abstain.",
+                  "Prefer abstain when a reply would only applaud, restate, posture, or force expertise.",
+                  "Use the personal taste profile as preference evidence, especially its edit signals and negative examples.",
+                  "Separate target, parent, and quoted context when present. List constraints. Mark needsClarification when confidence is below 0.5.",
+                  "Return JSON only."
+                ].join(" ")
+              : "Analyze intent and draft strategy. Separate target, parent, and quoted context. Mark needsClarification when confidence is below 0.5. Return JSON only."
+          },
+          { role: "user", content: JSON.stringify({ input, source, personalTasteProfile: tasteProfile ?? null }) }
+        ],
+        schemaName: "IntentAnalysis",
+        schema: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            intent: { type: "string", minLength: 1 },
+            confidence: { type: "number", minimum: 0, maximum: 1 },
+            needsClarification: { type: "boolean" },
+            speechAct: {
+              type: "string",
+              enum: ["question", "claim", "announcement", "advice", "opinion", "complaint", "other"]
+            },
+            claimOrAsk: { type: "string" },
+            replyObjective: { type: "string" },
+            shouldReply: { type: "boolean" },
+            replyWorthiness: { type: "number", minimum: 0, maximum: 100 },
+            recommendedStance: {
+              type: "string",
+              enum: ["answer", "agree-and-add", "clarify", "challenge", "contextualize", "ask", "acknowledge", "abstain"]
+            },
+            stanceReason: { type: "string" },
+            targetContext: { type: "string" },
+            parentContext: { type: "string" },
+            quotedContext: { type: "string" },
+            constraints: { type: "array", items: { type: "string" } }
+          },
+          required: ["intent", "confidence", "needsClarification", "constraints"]
+        },
+        maxTokens: 280,
+        temperature: 0.2
+      },
+      validate: (value) => {
+        const parsed = parseIntentAnalysis(value);
+        if (!parsed) return fallback();
+        return withSourceContext(parsed, source) ?? parsed;
+      }
+    });
     return result.data;
   } catch {
     return fallback();
@@ -524,14 +806,49 @@ async function analyzeIntent(db: AppDatabase, togetherClient: TogetherClient, in
 function heuristicIntent(input: string, source?: GenerateCommentRequest["sourcePost"]): IntentAnalysis {
   const words = normalizeForStorage(input).split(" ").filter(Boolean);
   const confidence = Math.min(0.95, Math.max(0.25, words.length / 12));
+  const isQuestion = input.includes("?");
+  const isThin = words.length < 5;
   return {
     intent: words.slice(0, 8).join(" ") || "unclear",
     confidence,
     needsClarification: confidence < 0.5,
+    ...(source ? {
+      shouldReply: !isThin,
+      replyWorthiness: isThin ? 35 : Math.round(confidence * 100),
+      recommendedStance: isThin ? "abstain" : isQuestion ? "answer" : "contextualize",
+      stanceReason: isThin ? "The source is too thin for a substantive reply." : isQuestion ? "Answer the explicit ask directly." : "Add context only if it changes how peers read the claim."
+    } as const : {}),
     ...(source ? { targetContext: source.text } : {}),
     ...(source?.parentPost ? { parentContext: source.parentPost.text } : {}),
     ...(source?.quotedPost ? { quotedContext: source.quotedPost.text } : {}),
     constraints: []
+  };
+}
+
+function boundedNumber(value: unknown, min: number, max: number): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? Math.min(max, Math.max(min, value)) : undefined;
+}
+
+function stringArray(value: unknown, limit: number): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0).slice(0, limit)
+    : [];
+}
+
+function emptyGenerationMeta(model: string) {
+  return { cached: false, model, estimatedCostUsd: 0, inputTokens: 0, outputTokens: 0 };
+}
+
+function combineGenerationMeta(
+  first: ReturnType<typeof emptyGenerationMeta>,
+  second: ReturnType<typeof emptyGenerationMeta>
+) {
+  return {
+    cached: first.cached && second.cached,
+    model: second.outputTokens > 0 ? second.model : first.model,
+    estimatedCostUsd: first.estimatedCostUsd + second.estimatedCostUsd,
+    inputTokens: first.inputTokens + second.inputTokens,
+    outputTokens: first.outputTokens + second.outputTokens
   };
 }
 

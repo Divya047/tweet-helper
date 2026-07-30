@@ -102,7 +102,11 @@ private struct ShareComposerView: View {
         do {
             let response = try await TweetHelperAPI.generateReply(context: context, sourceURL: content.url)
             cards = DraftExploreMapper.map(response)
-            if cards.isEmpty { message = "No drafts were returned. Check the backend and try again." }
+            if cards.isEmpty {
+                message = response.abstained == true
+                    ? (response.abstainReason ?? "Nothing here clears your reply taste bar.")
+                    : "No drafts were returned. Check the backend and try again."
+            }
         } catch { message = readableNetworkError(error) }
     }
 

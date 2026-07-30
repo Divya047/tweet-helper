@@ -1,4 +1,4 @@
-import type { OutcomeRequest } from "@tweet-helper/shared";
+import type { FeedbackRequest, OutcomeRequest } from "@tweet-helper/shared";
 
 export type ComposerKind = "post" | "reply";
 export type EventKind = "insert" | "edit" | "skip" | "published";
@@ -20,6 +20,10 @@ export interface QueueItem {
   /** Ultra-short summary of the source post topic for fast queue review. */
   sourceSummary?: string;
 }
+export interface QueueInsertResult {
+  inserted: boolean;
+  reason?: string;
+}
 export interface ClientEvent {
   clientEventId: string;
   kind: EventKind;
@@ -37,6 +41,7 @@ export interface ExtensionState {
   activeQueueItemId?: string;
   events: ClientEvent[];
   activity: { dayKey: string; posts: number; replies: number };
+  activityTracking: "insert";
 }
 export type FeedScrollStoppedReason = "cap" | "stagnant" | "duration" | "aborted";
 
@@ -217,7 +222,7 @@ export function mapNativeExplore(
   return cards.slice(0, 5);
 }
 
-/** Distinct reply structures assigned across a queue batch so drafts do not collapse into one anecdote tone. */
+/** @deprecated Legacy explicit presets. Live reply generation now uses the backend's source-aware taste gate. */
 export const REPLY_TONES = [
   {
     label: "Practical caveat",
@@ -253,7 +258,7 @@ export const REPLY_TONES = [
   }
 ] as const;
 
-/** Distinct voice/rhythm registers so a batch does not share one polished AI cadence. */
+/** @deprecated Legacy voice presets retained for stored callers and compatibility tests. */
 export const REPLY_VOICES = [
   {
     label: "Dry understated",
@@ -293,7 +298,7 @@ export type ReplyTone = (typeof REPLY_TONES)[number];
 export type ReplyVoice = (typeof REPLY_VOICES)[number];
 export type ReplyStyle = { tone: ReplyTone; voice: ReplyVoice };
 
-/** Shuffle once per batch, then rotate — structure and voice both vary without repeating the same pair back-to-back. */
+/** @deprecated Live reply paths no longer assign random styles. */
 export function assignReplyStyles(count: number): ReplyStyle[] {
   const tones = shuffleCopy(REPLY_TONES);
   const voices = shuffleCopy(REPLY_VOICES);
@@ -303,12 +308,12 @@ export function assignReplyStyles(count: number): ReplyStyle[] {
   }));
 }
 
-/** @deprecated Prefer assignReplyStyles — kept for callers that only need structure labels. */
+/** @deprecated Live reply paths use buildTasteAwareReplyInstructions. */
 export function assignReplyTones(count: number): ReplyTone[] {
   return assignReplyStyles(count).map((style) => style.tone);
 }
 
-/** Shared drafting instructions for queue finds and composer draft-reply. */
+/** @deprecated Live reply paths use buildTasteAwareReplyInstructions. */
 export function buildReplyDraftInstructions(style: ReplyStyle, outcome: string): string {
   return [
     `Reply tone for this draft: ${style.tone.label}.`,
@@ -318,6 +323,17 @@ export function buildReplyDraftInstructions(style: ReplyStyle, outcome: string):
     "Signal peer expertise with a complete thought that stands alone.",
     "Never invent facts, metrics, credentials, or personal experiences. If a story would require invention, use a different structure.",
     "Do not use generic AI openers or stock parallel constructions; sound like a real peer typing on X.",
+    `Desired response: ${outcome}.`
+  ].join("\n");
+}
+
+/** Let the backend choose a source-aware stance instead of assigning a random persona. */
+export function buildTasteAwareReplyInstructions(outcome: string): string {
+  return [
+    "Choose the stance from the source post and the user's learned taste; do not force a predetermined reply format.",
+    "Prefer no reply to applause, restatement, performative expertise, or a question asked only for engagement.",
+    "Draft multiple internal candidates for the taste gate, then return only what clears it.",
+    "Never invent facts, metrics, credentials, or personal experiences.",
     `Desired response: ${outcome}.`
   ].join("\n");
 }
@@ -355,4 +371,45 @@ export function outcomePayloadForEvent(event: ClientEvent): OutcomeRequest | und
       ...(event.context.quoted ? { quoted: event.context.quoted } : {})
     }
   };
+}
+
+export function feedbackPayloadForEvent(event: ClientEvent): FeedbackRequest | undefined {
+  if (!event.suggestionId) return undefined;
+  const context = {
+    sourcePost: event.context.target,
+    ...(event.context.parent ? { parentPost: event.context.parent } : {}),
+    ...(event.context.quoted ? { quotedPost: event.context.quoted } : {}),
+    eventKind: event.kind
+  };
+  if (event.kind === "skip") {
+    return {
+      suggestionId: event.suggestionId,
+      kind: event.context.kind === "reply" ? "comment" : "post",
+      decision: "skipped",
+      ...(event.originalText ? { originalText: event.originalText } : {}),
+      context
+    };
+  }
+  if (event.kind === "edit" && event.originalText && event.finalText) {
+    return {
+      suggestionId: event.suggestionId,
+      kind: event.context.kind === "reply" ? "comment" : "post",
+      decision: "edited",
+      originalText: event.originalText,
+      finalText: event.finalText,
+      context
+    };
+  }
+  if (event.kind === "published" && event.finalText) {
+    const originalText = event.originalText?.trim();
+    return {
+      suggestionId: event.suggestionId,
+      kind: event.context.kind === "reply" ? "comment" : "post",
+      decision: originalText && originalText !== event.finalText.trim() ? "edited" : "accepted",
+      ...(originalText ? { originalText } : {}),
+      finalText: event.finalText.trim(),
+      context
+    };
+  }
+  return undefined;
 }

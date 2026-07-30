@@ -116,7 +116,7 @@ struct GrowthPreferences: Codable, Equatable {
 }
 
 struct ActivityState: Codable, Equatable {
-    static let softGoals = (posts: 8, replies: 24)
+    static let softGoals = (posts: 24, replies: 8)
 
     var dayKey: String
     var posts: Int
@@ -226,6 +226,8 @@ struct DraftResponse: Decodable {
     let recommendedId: String?
     let recommendation: DraftSuggestion?
     let explore: [DraftSuggestion]?
+    let abstained: Bool?
+    let abstainReason: String?
 }
 
 struct DraftSuggestion: Identifiable, Decodable, Equatable {

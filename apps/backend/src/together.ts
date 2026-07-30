@@ -160,6 +160,36 @@ export const draftResponseSchema = {
   type: "object",
   additionalProperties: false,
   properties: {
+    intentAnalysis: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        intent: { type: "string", minLength: 1 },
+        confidence: { type: "number", minimum: 0, maximum: 1 },
+        needsClarification: { type: "boolean" },
+        speechAct: {
+          type: "string",
+          enum: ["question", "claim", "announcement", "advice", "opinion", "complaint", "other"]
+        },
+        claimOrAsk: { type: "string" },
+        replyObjective: { type: "string" },
+        shouldReply: { type: "boolean" },
+        replyWorthiness: { type: "number", minimum: 0, maximum: 100 },
+        recommendedStance: {
+          type: "string",
+          enum: ["answer", "agree-and-add", "clarify", "challenge", "contextualize", "ask", "acknowledge", "abstain"]
+        },
+        stanceReason: { type: "string" },
+        targetContext: { type: "string" },
+        parentContext: { type: "string" },
+        quotedContext: { type: "string" },
+        constraints: {
+          type: "array",
+          items: { type: "string" }
+        }
+      },
+      required: ["intent", "confidence", "needsClarification", "constraints"]
+    },
     suggestions: {
       type: "array",
       minItems: 1,
@@ -171,13 +201,53 @@ export const draftResponseSchema = {
           id: { type: "string" },
           text: { type: "string", minLength: 1 },
           rationale: { type: "string", minLength: 1 },
-          confidence: { type: "number", minimum: 0, maximum: 1 }
+          confidence: { type: "number", minimum: 0, maximum: 1 },
+          strategy: { type: "string" },
+          isQuestion: { type: "boolean" }
         },
         required: ["text", "rationale", "confidence"]
       }
-    }
+    },
+    abstained: { type: "boolean" },
+    abstainReason: { type: "string" }
   },
   required: ["suggestions"]
+} satisfies Record<string, unknown>;
+
+export const tasteDecisionSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    shouldReply: { type: "boolean" },
+    reason: { type: "string", minLength: 1, maxLength: 240 },
+    confidence: { type: "number", minimum: 0, maximum: 1 },
+    recommendedId: { type: "string" },
+    stance: {
+      type: "string",
+      enum: ["answer", "agree-and-add", "clarify", "challenge", "contextualize", "ask", "acknowledge", "abstain"]
+    },
+    evaluations: {
+      type: "array",
+      minItems: 1,
+      maxItems: 5,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          suggestionId: { type: "string", minLength: 1 },
+          score: { type: "number", minimum: 0, maximum: 100 },
+          sourceFit: { type: "number", minimum: 0, maximum: 100 },
+          novelty: { type: "number", minimum: 0, maximum: 100 },
+          voiceFit: { type: "number", minimum: 0, maximum: 100 },
+          restraint: { type: "number", minimum: 0, maximum: 100 },
+          reasons: { type: "array", maxItems: 3, items: { type: "string", maxLength: 100 } },
+          flags: { type: "array", maxItems: 4, items: { type: "string", maxLength: 60 } }
+        },
+        required: ["suggestionId", "score", "sourceFit", "novelty", "voiceFit", "restraint", "reasons", "flags"]
+      }
+    }
+  },
+  required: ["shouldReply", "reason", "confidence", "evaluations"]
 } satisfies Record<string, unknown>;
 
 export const scoreResponseSchema = {

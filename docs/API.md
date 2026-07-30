@@ -8,7 +8,7 @@ Base URL: `http://127.0.0.1:4317`
 { "ok": true }
 ```
 
-If `MOBILE_AUTH_TOKEN` is set, include this header on generation, feedback, and settings endpoints:
+If `MOBILE_AUTH_TOKEN` is set, include this header on generation, feedback, taste-profile, and settings endpoints:
 
 ```http
 Authorization: Bearer <token>
@@ -130,7 +130,9 @@ Response uses the same draft envelope as post/comment generation:
 
 Recommendations are limited to `reply`, `quote idea`, `save for later`, or `skip`.
 
-Generation responses remain compatible through `data.suggestions`. They now also expose `recommendation`, up to four `explore` variants, structured `intentAnalysis` (including separate target, parent, and quoted context when supplied), and `strategies`. Final prose is deliberately not cached; callers may pass `regenerationSeed` to request a fresh direction. Structured scoring remains cacheable. Up to 24 visible posts may be scored per request.
+Generation responses remain compatible through `data.suggestions`. They also expose `recommendation`, `explore`, structured `intentAnalysis`, and `strategies`. For `/api/generate/comment`, source analysis selects whether replying is worthwhile and a source-aware stance before drafting. A separate taste judge then scores internal candidates for source fit, novelty, learned voice, and restraint. Only the winning reply is returned. When silence is stronger, `suggestions` is empty and the response includes `abstained: true`, `abstainReason`, and `tasteDecision`.
+
+Final prose and taste decisions are deliberately not cached; callers may pass `regenerationSeed` to request a fresh direction. Structured feed scoring remains cacheable. Up to 24 visible posts may be scored per request.
 
 ## Work sessions
 
@@ -164,7 +166,9 @@ Archive imports reconcile exact generated-draft matches into published outcomes 
 }
 ```
 
-Accepted and edited `finalText` can be added back into local examples for future personalization.
+Accepted and edited `finalText` is added back into local examples. Accepted, edited, rejected, and skipped decisions all rebuild the personal taste profile. Edits teach shortening, question removal, applause removal, hedging, directness, and related preferences; skipped/rejected originals become negative examples rather than writing samples.
+
+`GET /api/taste-profile` returns the current local profile, including decision counts, preferred-draft signals, edit tendencies, representative positive/negative examples, and derived guidance.
 
 ## Settings
 
