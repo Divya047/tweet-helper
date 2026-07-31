@@ -9,6 +9,20 @@ enum TweetHelperSettings {
     private static let growthPreferencesKey = "growthPreferences.v1"
     private static let activityKey = "activity.v1"
 
+    static var sharedContainerAvailable: Bool {
+        FileManager.default.containerURL(
+            forSecurityApplicationGroupIdentifier: appGroupIdentifier
+        ) != nil
+    }
+
+    /// Read without falling back to this process's private defaults. Extensions
+    /// must fail clearly when signing did not grant the shared App Group.
+    static var sharedBackendURL: String? {
+        guard sharedContainerAvailable,
+              let sharedDefaults = UserDefaults(suiteName: appGroupIdentifier) else { return nil }
+        return sharedDefaults.string(forKey: backendURLKey)?.nilIfBlank
+    }
+
     static var defaults: UserDefaults {
         UserDefaults(suiteName: appGroupIdentifier) ?? .standard
     }
@@ -75,7 +89,8 @@ enum TweetHelperSettings {
         let info = Bundle.main.infoDictionary ?? [:]
         let version = info["CFBundleShortVersionString"] as? String ?? "?"
         let build = info["CFBundleVersion"] as? String ?? "?"
-        return "Build \(version) (\(build)) | \(Bundle.main.bundleIdentifier ?? "unknown")"
+        let group = sharedContainerAvailable ? "App Group ready" : "App Group unavailable"
+        return "Build \(version) (\(build)) | \(Bundle.main.bundleIdentifier ?? "unknown") | \(group) | \(backendURL)"
     }
 }
 

@@ -200,7 +200,7 @@ private struct SettingsView: View {
     @State private var backendURL = TweetHelperSettings.backendURL
     @State private var authToken = TweetHelperSettings.authToken
     @State private var growth = TweetHelperSettings.growthPreferences
-    @State private var status = "Settings are shared with the keyboard and Share Extension."
+    @State private var status = "Settings are shared with the keyboard, Share Extension, and Safari scanner."
     @State private var checking = false
 
     var body: some View {
@@ -210,7 +210,12 @@ private struct SettingsView: View {
                     TextField("http://100.x.y.z:4317", text: $backendURL).keyboardType(.URL)
                         .textInputAutocapitalization(.never).autocorrectionDisabled()
                     SecureField("Mobile auth token", text: $authToken).textInputAutocapitalization(.never)
-                    Button("Save") { save(); status = "Saved to the App Group." }
+                    Button("Save") {
+                        save()
+                        status = TweetHelperSettings.sharedContainerAvailable
+                            ? "Saved to the App Group for Safari."
+                            : "App Group unavailable. Enable the capability for the app and Safari targets in Xcode, then reinstall."
+                    }
                     Button(checking ? "Checking…" : "Check connection") { Task { await check() } }.disabled(checking)
                     Text(status).font(.footnote).foregroundStyle(.secondary)
                     Text("Paste the exact URL that loads /health in Safari. If Check connection fails with [-1004], allow Local Network for Tweet Helper in iOS Settings → Tweet Helper.")
@@ -229,7 +234,9 @@ private struct SettingsView: View {
                         .font(.footnote).foregroundStyle(.secondary)
                 }
                 Section("Extensions") {
-                    Text("Share text or a URL from Chrome or X to Tweet Helper. Enable the Tweet Helper keyboard in Settings → General → Keyboard → Keyboards and allow Full Access for backend calls.")
+                    Text("For feed scanning, open iOS Settings → Apps → Safari → Extensions → Tweet Helper, enable it, and allow access to x.com. Then sign into x.com in Safari and open Tweet Helper from Safari’s page menu.")
+                    Text("The Safari scanner provides Find 8 high-intent replies and trend ideas through the same Tailscale backend. Keep its compact sheet open while it scrolls.")
+                    Text("For the native X app, enable the Tweet Helper keyboard in Settings → General → Keyboard → Keyboards and allow Full Access for backend calls.")
                     Text("Tweet Helper only prepares and inserts text. It never submits to X.")
                 }
                 Section("Diagnostics") { Text(TweetHelperSettings.diagnostics).font(.footnote) }

@@ -1,0 +1,41 @@
+:root{color-scheme:light dark;font:13px/1.35 -apple-system,BlinkMacSystemFont,system-ui,sans-serif;background:Canvas;color:CanvasText}
+*{box-sizing:border-box}
+html,body{margin:0;width:100%;min-width:280px;max-width:100vw;overflow-x:hidden}
+body{padding-bottom:env(safe-area-inset-bottom)}
+header{height:42px;padding:8px 12px;display:flex;align-items:center;justify-content:space-between;gap:8px;border-bottom:1px solid color-mix(in srgb,CanvasText 15%,transparent)}
+header strong{font-size:15px;white-space:nowrap}
+header span{font-size:10px;color:color-mix(in srgb,CanvasText 58%,transparent);text-align:right}
+nav{position:sticky;top:0;z-index:3;display:grid;grid-template-columns:repeat(3,1fr);gap:3px;padding:5px 8px;background:Canvas;border-bottom:1px solid color-mix(in srgb,CanvasText 12%,transparent)}
+button,textarea,input,select{font:inherit}
+button{min-height:40px;padding:6px 9px;border:1px solid color-mix(in srgb,CanvasText 24%,transparent);border-radius:9px;background:Canvas;color:CanvasText;font-weight:650}
+button:active{transform:scale(.985);background:color-mix(in srgb,CanvasText 9%,Canvas)}
+button:disabled{opacity:.55}
+button:focus-visible,textarea:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid Highlight;outline-offset:1px}
+nav button{min-height:34px;padding:4px 6px}
+nav button[aria-selected=true]{background:CanvasText;color:Canvas}
+main{padding:9px;display:grid;gap:9px;overflow-wrap:anywhere}
+main>h1{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+.card{border:1px solid color-mix(in srgb,CanvasText 18%,transparent);border-radius:11px;padding:10px;display:grid;gap:7px}
+.card strong{font-size:13px;line-height:1.4}
+.muted{color:color-mix(in srgb,CanvasText 62%,transparent);font-size:11px}
+.goals{display:grid;grid-template-columns:1fr 1fr;gap:7px}
+.goal{padding:8px}.goal strong{font-size:18px}
+.primary{background:CanvasText;color:Canvas}
+.recommended{border:2px solid Highlight}
+.strategy{font-size:10px;text-transform:uppercase;letter-spacing:.035em;color:Highlight}
+.section-title{margin:2px 0 0;font-size:12px}
+.explore-actions{display:grid;grid-template-columns:1fr;gap:6px}
+.trend-list{display:flex;flex-wrap:wrap;gap:5px}
+.trend-chip{display:inline-flex;align-items:center;min-height:26px;padding:3px 8px;border-radius:999px;background:color-mix(in srgb,Highlight 14%,Canvas);font-size:10px;font-weight:650}
+.source{padding:7px;border-radius:8px;background:color-mix(in srgb,CanvasText 6%,Canvas);display:grid;gap:2px}
+.source p{margin:0;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.actions{display:grid;grid-template-columns:1fr 1fr 44px;gap:5px}
+.actions button{min-height:36px;padding:4px 6px;font-size:11px}
+.actions button:last-child{grid-column:auto}
+textarea,input,select{width:100%;padding:8px;border:1px solid color-mix(in srgb,CanvasText 25%,transparent);border-radius:8px;background:Canvas;color:CanvasText}
+textarea{min-height:68px;max-height:120px;resize:vertical}
+.growth-controls{display:grid;grid-template-columns:1fr;gap:4px;padding:8px;border-radius:10px;background:color-mix(in srgb,Highlight 7%,Canvas)}
+.growth-controls label{font-size:10px}.growth-controls label:not(:first-child){margin-top:2px}
+#status{position:sticky;bottom:0;z-index:4;min-height:38px;max-height:66px;overflow:auto;padding:8px 10px calc(8px + env(safe-area-inset-bottom));background:color-mix(in srgb,Canvas 94%,transparent);border-top:1px solid color-mix(in srgb,CanvasText 12%,transparent);color:color-mix(in srgb,CanvasText 68%,transparent);font-size:11px;backdrop-filter:blur(12px)}
+@media(max-width:330px){header span{display:none}.actions{grid-template-columns:1fr 1fr}.actions button:last-child{grid-column:1/-1}}
+@media(min-width:500px){html,body{max-width:430px}main{padding:12px}.card{padding:12px}}

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import manifest from "../public/manifest.json";
+import safariManifest from "../public-safari/manifest.json";
 import { readFileSync } from "node:fs";
 import {
   FIND_HIGH_INTENT,
@@ -20,6 +21,22 @@ import {
 describe("MV3 side-panel and accessibility contracts", () => {
   it("uses a side panel and messaging-capable service worker without a popup", () => {
     expect(manifest.manifest_version).toBe(3); expect(manifest.side_panel.default_path).toBe("sidepanel.html"); expect(manifest.permissions).toContain("sidePanel"); expect(manifest.action).not.toHaveProperty("default_popup");
+  });
+  it("packages a compact, least-privilege iPhone Safari popup", () => {
+    expect(safariManifest.manifest_version).toBe(3);
+    expect(safariManifest.permissions).toContain("nativeMessaging");
+    expect(safariManifest.action.default_popup).toBe("mobile.html");
+    expect(safariManifest.host_permissions).toEqual([
+      "https://x.com/*",
+      "https://twitter.com/*",
+      "https://divyas-laptop.tail991db1.ts.net/*"
+    ]);
+    const html = readFileSync(new URL("../public-safari/mobile.html", import.meta.url), "utf8");
+    const css = readFileSync(new URL("../public-safari/mobile.css", import.meta.url), "utf8");
+    expect(html).toContain("viewport-fit=cover");
+    expect(css).toContain("env(safe-area-inset-bottom)");
+    expect(css).toContain("position:sticky");
+    expect(css).toContain("-webkit-line-clamp:2");
   });
   it("keeps targets accessible, responsive, focused, and color-scheme aware", () => {
     const css = readFileSync(new URL("../public/sidepanel.css", import.meta.url), "utf8");

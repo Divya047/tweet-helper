@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "Tweet Helper for Safari",
+  "version": "1.0.0",
+  "description": "Find high-intent replies and trend ideas while browsing X on iPhone.",
+  "permissions": ["storage", "tabs", "nativeMessaging"],
+  "host_permissions": [
+    "https://x.com/*",
+    "https://twitter.com/*",
+    "https://divyas-laptop.tail991db1.ts.net/*"
+  ],
+  "action": {
+    "default_title": "Tweet Helper",
+    "default_popup": "mobile.html"
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://x.com/*", "https://twitter.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'"
+  }
+}

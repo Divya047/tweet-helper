@@ -4,6 +4,7 @@ declare const chrome: {
     onInstalled?: { addListener(callback: () => void): void };
     onMessage?: { addListener(callback: (message: any, sender: any, sendResponse: (response?: any) => void) => boolean | void): void };
     sendMessage(message: unknown): Promise<any>;
+    sendNativeMessage?(applicationId: string, message: unknown): Promise<any>;
   };
   tabs?: {
     query?(query: { active?: boolean; currentWindow?: boolean }): Promise<Array<{ id?: number }>>;

@@ -14,6 +14,12 @@ chrome.runtime!.onMessage!.addListener((message: ExtensionMessage, sender, sendR
 });
 
 async function handleMessage(message: ExtensionMessage, sender: { tab?: { id?: number }; documentId?: string }): Promise<unknown> {
+  if (message.type === "NATIVE_CONFIG_REQUEST") {
+    return sendNative(message);
+  }
+  if (message.type === "NATIVE_API_REQUEST") {
+    return sendNative(message);
+  }
   if (message.type === "GET_STATE") return syncEvents(await loadState());
   if (message.type === "SET_QUEUE") {
     const state = await loadState();
@@ -30,6 +36,22 @@ async function handleMessage(message: ExtensionMessage, sender: { tab?: { id?: n
     return { ok: true };
   }
   return { ok: false };
+}
+
+async function sendNative(message: ExtensionMessage): Promise<unknown> {
+  if (!chrome.runtime?.sendNativeMessage) return { nativeBridge: false };
+  try {
+    const response = await chrome.runtime.sendNativeMessage("com.djdesai.TweetHelperMobile", message) as
+      | { ok?: boolean; data?: unknown; error?: string; status?: number; backendUrl?: string; authToken?: string }
+      | undefined;
+    return { nativeBridge: true, ...(response ?? { ok: false, error: "The iPhone app did not answer." }) };
+  } catch (error) {
+    return {
+      nativeBridge: true,
+      ok: false,
+      error: error instanceof Error ? error.message : "Could not reach the containing iPhone app."
+    };
+  }
 }
 
 async function syncEvents(state: Awaited<ReturnType<typeof loadState>>): Promise<typeof state> {

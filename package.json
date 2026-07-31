@@ -12,6 +12,7 @@
     "dev": "npm run dev -w @tweet-helper/backend",
     "backend:dev": "npm run dev -w @tweet-helper/backend",
     "extension:build": "npm run build -w @tweet-helper/extension",
+    "extension:safari-build": "npm run build:safari -w @tweet-helper/extension",
     "test": "vitest run",
     "typecheck": "tsc -b --pretty false"
   },

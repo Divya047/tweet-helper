@@ -72,7 +72,9 @@ export type ExtensionMessage =
       reportProgress?: boolean;
     }
   | { type: "STOP_FEED_SCROLL" }
-  | { type: "FEED_SCROLL_PROGRESS"; posts: number; scrolls: number; elapsedMs: number };
+  | { type: "FEED_SCROLL_PROGRESS"; posts: number; scrolls: number; elapsedMs: number }
+  | { type: "NATIVE_CONFIG_REQUEST" }
+  | { type: "NATIVE_API_REQUEST"; path: string; method: "GET" | "POST"; body?: unknown };
 
 export const FIND_HIGH_INTENT = {
   targetReplies: 8,

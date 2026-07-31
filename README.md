@@ -6,7 +6,7 @@ The app has two parts:
 
 - A local Fastify backend that stores your writing examples in SQLite and calls Together AI.
 - A Chrome Manifest V3 extension that adds drafting and visible-post scoring controls on X.
-- An iPhone SwiftUI containing app and custom keyboard scaffold under `apps/ios/TweetHelperMobile`.
+- An iPhone SwiftUI app with a compact Safari feed scanner, Share Extension, and custom keyboard under `apps/ios/TweetHelperMobile`.
 
 V1 never clicks Post, Reply, Like, Follow, or Repost. It only generates, ranks, copies, or inserts drafts that you approve manually.
 
@@ -95,9 +95,9 @@ npm run extension:build
 
 Then load `apps/extension/dist` as an unpacked extension in Chrome.
 
-## iPhone Keyboard
+## iPhone Safari Scanner and Keyboard
 
-The iOS scaffold lives in `apps/ios/TweetHelperMobile`. It includes a setup app and a `Tweet Helper` custom keyboard extension.
+The iOS project lives in `apps/ios/TweetHelperMobile`. It includes a setup app, compact Safari Web Extension, Share Extension, and custom keyboard.
 
 Recommended personal setup is Tailscale-only:
 
@@ -105,9 +105,9 @@ Recommended personal setup is Tailscale-only:
 HOST=0.0.0.0 PORT=4317 MOBILE_AUTH_TOKEN=<long-random-token> npm run backend:dev
 ```
 
-On the phone, use `http://<mac-tailscale-ip>:4317` as the backend URL and enter the same token. Open the Xcode project, replace the placeholder bundle IDs/App Group with your Apple developer values, enable the App Group on both targets, run the containing app on the phone, then enable the keyboard in iOS Settings with Allow Full Access.
+On the phone, use `http://<mac-tailscale-ip>:4317` as the backend URL and enter the same token. Run `npm run extension:safari-build`, open the Xcode project, confirm signing and the shared App Group on every target, and run the containing app on the phone. Enable Tweet Helper under iOS Settings → Apps → Safari → Extensions with access to `x.com`; enable the keyboard separately with Allow Full Access.
 
-The keyboard supports `Post`, `Reply`, and `Rewrite`. It inserts text only after you tap a suggestion, uses `documentContextBeforeInput` only for rewrite, and never posts, replies, likes, reposts, scrapes the screen, or calls the X API.
+In Safari on `x.com`, the compact popup exposes Today, Queue, Find 8 high-intent replies, and feed-trend ideas while the shared content script handles source matching and insertion. Backend requests travel through the native extension handler to the App Group’s Tailscale URL. The keyboard remains available for inserting or rewriting text in the native X app. Nothing submits automatically or calls the X API.
 
 ## API
 
