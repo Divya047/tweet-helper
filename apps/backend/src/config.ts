@@ -1,13 +1,10 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { DEFAULT_MODEL } from "@tweet-helper/shared";
-
 export interface AppConfig {
   port: number;
   host: string;
   dbPath: string;
-  model: string;
-  togetherApiKey?: string;
+  codexCliPath: string;
   mobileAuthToken?: string;
   dailyBudgetUsd: number;
   monthlyBudgetUsd: number;
@@ -70,16 +67,14 @@ function isWorkspacePackage(dir: string): boolean {
 }
 
 export function getConfig(overrides: Partial<AppConfig> = {}): AppConfig {
-  const togetherApiKey = process.env.TOGETHER_API_KEY || undefined;
   const mobileAuthToken = process.env.MOBILE_AUTH_TOKEN || undefined;
   return {
     port: numberFromEnv("PORT", 4317),
     host: process.env.HOST ?? "127.0.0.1",
     dbPath: process.env.DB_PATH ?? "./data/tweet-helper.sqlite",
-    model: process.env.TOGETHER_MODEL ?? DEFAULT_MODEL,
+    codexCliPath: process.env.CODEX_CLI_PATH ?? "codex",
     dailyBudgetUsd: numberFromEnv("DAILY_BUDGET_USD", 2),
     monthlyBudgetUsd: numberFromEnv("MONTHLY_BUDGET_USD", 20),
-    ...(togetherApiKey ? { togetherApiKey } : {}),
     ...(mobileAuthToken ? { mobileAuthToken } : {}),
     ...overrides
   };

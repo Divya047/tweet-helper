@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { buildServer, createMockTogetherClient } from "../src/server.js";
+import { buildServer, createMockCodexClient } from "../src/server.js";
 import { openDatabase } from "../src/db.js";
-import type { JsonCompletionRequest } from "../src/together.js";
+import type { JsonCompletionRequest } from "../src/codex.js";
 
 describe("backend routes", () => {
   it("imports archive data and generates mocked post drafts without network calls", async () => {
     const db = openDatabase(":memory:");
     const requests: JsonCompletionRequest[] = [];
-    const mockTogether = createMockTogetherClient((request) => {
+    const mockCodex = createMockCodexClient((request) => {
       requests.push(request);
       return {
         suggestions: [
@@ -37,7 +37,7 @@ describe("backend routes", () => {
     const { app } = await buildServer({
       db,
       config: { dbPath: ":memory:", dailyBudgetUsd: 10, monthlyBudgetUsd: 10 },
-      togetherClient: mockTogether
+      codexClient: mockCodex
     });
 
     const importResponse = await app.inject({
@@ -77,7 +77,7 @@ describe("backend routes", () => {
 
   it("scores visible posts with safe recommendations", async () => {
     const db = openDatabase(":memory:");
-    const mockTogether = createMockTogetherClient(() => ({
+    const mockCodex = createMockCodexClient(() => ({
       rankedPosts: [
         {
           id: "123",
@@ -93,7 +93,7 @@ describe("backend routes", () => {
     const { app } = await buildServer({
       db,
       config: { dbPath: ":memory:", dailyBudgetUsd: 10, monthlyBudgetUsd: 10 },
-      togetherClient: mockTogether
+      codexClient: mockCodex
     });
 
     const response = await app.inject({
@@ -114,7 +114,7 @@ describe("backend routes", () => {
 
   it("forces comment-bait posts to skip for high-intent scoring", async () => {
     const db = openDatabase(":memory:");
-    const mockTogether = createMockTogetherClient(() => ({
+    const mockCodex = createMockCodexClient(() => ({
       rankedPosts: [
         {
           id: "bait",
@@ -130,7 +130,7 @@ describe("backend routes", () => {
     const { app } = await buildServer({
       db,
       config: { dbPath: ":memory:", dailyBudgetUsd: 10, monthlyBudgetUsd: 10 },
-      togetherClient: mockTogether
+      codexClient: mockCodex
     });
 
     const response = await app.inject({
@@ -151,13 +151,13 @@ describe("backend routes", () => {
 
   it("keeps protected routes open when mobile auth is not configured", async () => {
     const db = openDatabase(":memory:");
-    const mockTogether = createMockTogetherClient(() => ({
+    const mockCodex = createMockCodexClient(() => ({
       suggestions: [{ text: "A clearer local-first draft.", rationale: "Tighter.", confidence: 0.8 }]
     }));
     const { app } = await buildServer({
       db,
       config: { dbPath: ":memory:", dailyBudgetUsd: 10, monthlyBudgetUsd: 10 },
-      togetherClient: mockTogether
+      codexClient: mockCodex
     });
 
     const response = await app.inject({
@@ -173,13 +173,13 @@ describe("backend routes", () => {
 
   it("requires bearer auth for protected routes when mobile auth is configured", async () => {
     const db = openDatabase(":memory:");
-    const mockTogether = createMockTogetherClient(() => ({
+    const mockCodex = createMockCodexClient(() => ({
       suggestions: [{ text: "Authorized draft.", rationale: "Valid.", confidence: 0.8 }]
     }));
     const { app } = await buildServer({
       db,
       config: { dbPath: ":memory:", dailyBudgetUsd: 10, monthlyBudgetUsd: 10, mobileAuthToken: "secret-token" },
-      togetherClient: mockTogether
+      codexClient: mockCodex
     });
 
     const missing = await app.inject({
@@ -217,7 +217,7 @@ describe("backend routes", () => {
   it("rewrites existing drafts through cache and rejects empty text", async () => {
     const db = openDatabase(":memory:");
     const requests: JsonCompletionRequest[] = [];
-    const mockTogether = createMockTogetherClient((request) => {
+    const mockCodex = createMockCodexClient((request) => {
       requests.push(request);
       return {
         suggestions: [
@@ -229,7 +229,7 @@ describe("backend routes", () => {
     const { app } = await buildServer({
       db,
       config: { dbPath: ":memory:", dailyBudgetUsd: 10, monthlyBudgetUsd: 10 },
-      togetherClient: mockTogether
+      codexClient: mockCodex
     });
 
     const invalid = await app.inject({
@@ -270,7 +270,7 @@ describe("backend routes", () => {
 
   it("selects one source-aware reply through the taste judge", async () => {
     const db = openDatabase(":memory:");
-    const mockTogether = createMockTogetherClient((request) => {
+    const mockCodex = createMockCodexClient((request) => {
       if (request.schemaName === "IntentAnalysis") {
         return {
           intent: "Author asks when to talk to customers",
@@ -309,7 +309,7 @@ describe("backend routes", () => {
     const { app } = await buildServer({
       db,
       config: { dbPath: ":memory:", dailyBudgetUsd: 10, monthlyBudgetUsd: 10 },
-      togetherClient: mockTogether
+      codexClient: mockCodex
     });
 
     const response = await app.inject({
@@ -331,7 +331,7 @@ describe("backend routes", () => {
 
   it("returns an explicit abstention when no reply clears the taste bar", async () => {
     const db = openDatabase(":memory:");
-    const mockTogether = createMockTogetherClient((request) => {
+    const mockCodex = createMockCodexClient((request) => {
       if (request.schemaName === "IntentAnalysis") {
         return {
           intent: "Bare launch announcement",
@@ -367,7 +367,7 @@ describe("backend routes", () => {
     const { app } = await buildServer({
       db,
       config: { dbPath: ":memory:", dailyBudgetUsd: 10, monthlyBudgetUsd: 10 },
-      togetherClient: mockTogether
+      codexClient: mockCodex
     });
 
     const response = await app.inject({
@@ -388,7 +388,7 @@ describe("backend routes", () => {
     const { app } = await buildServer({
       db,
       config: { dbPath: ":memory:", dailyBudgetUsd: 10, monthlyBudgetUsd: 10 },
-      togetherClient: createMockTogetherClient(() => ({}))
+      codexClient: createMockCodexClient(() => ({}))
     });
 
     await app.inject({

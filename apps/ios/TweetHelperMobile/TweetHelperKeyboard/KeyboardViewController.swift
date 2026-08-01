@@ -31,6 +31,7 @@ final class KeyboardViewController: UIInputViewController {
         statusLabel.numberOfLines = 2; statusLabel.text = "Save drafts in the app or Share Extension. Tweet Helper never submits."
         stack.addArrangedSubview(statusLabel)
         updateButtons()
+        Task { await TweetHelperAPI.flushPendingTelemetry() }
     }
 
     private func configure(_ button: UIButton, title: String, symbol: String, action: Selector) {
@@ -60,11 +61,26 @@ final class KeyboardViewController: UIInputViewController {
         } else {
             TweetHelperSettings.recordActivity(kind: .post)
         }
-        statusLabel.text = "Inserted. Recording usage…"
+        statusLabel.text = "Inserted. Syncing feedback…"
         let eventID = UUID()
+        do {
+            try PendingTelemetryStore.enqueueOutcome(UsedOutcomePayload(draft: draft, clientEventID: eventID))
+            if let payload = TasteFeedbackPayload.make(draft: draft, eventKind: .inserted) {
+                try PendingTelemetryStore.enqueueFeedback(payload)
+            }
+        } catch {
+            statusLabel.text = "Inserted. Feedback could not be queued: \(error.localizedDescription)"
+            return
+        }
         Task {
-            do { try await TweetHelperAPI.recordUsed(draft, clientEventID: eventID); setStatus("Inserted and recorded as used.") }
-            catch { setStatus("Inserted. Usage could not sync; \(readableNetworkError(error))") }
+            var syncError: Error?
+            do { try await TweetHelperAPI.flushPendingFeedback() } catch { syncError = error }
+            do { try await TweetHelperAPI.flushPendingOutcomes() } catch { if syncError == nil { syncError = error } }
+            if let syncError {
+                setStatus("Inserted. Feedback is saved for retry; \(readableNetworkError(syncError))")
+            } else {
+                setStatus("Inserted and taste feedback recorded.")
+            }
         }
     }
 

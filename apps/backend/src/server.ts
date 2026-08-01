@@ -2,7 +2,6 @@ import { readFileSync } from "node:fs";
 import cors from "@fastify/cors";
 import Fastify, { type FastifyInstance } from "fastify";
 import {
-  ADVANCED_MODEL,
   DEFAULT_MODEL,
   estimateTokens,
   validateGenerateRewriteRequest,
@@ -23,7 +22,6 @@ import {
   type TasteDecision
 } from "@tweet-helper/shared";
 import { parseTweetsJs, parseXArchiveZip } from "./archive.js";
-import { assertWithinBudget } from "./budget.js";
 import { getConfig, loadEnvFiles, type AppConfig } from "./config.js";
 import {
   getCachedGeneration,
@@ -72,19 +70,19 @@ import {
 } from "./style.js";
 import {
   cacheKeyFor,
-  createTogetherClient,
+  createCodexClient,
   draftResponseSchema,
   scoreResponseSchema,
   tasteDecisionSchema,
   type JsonCompletionRequest,
   type JsonCompletionResult,
-  type TogetherClient
-} from "./together.js";
+  type CodexClient
+} from "./codex.js";
 
 export interface BuildServerOptions {
   config?: Partial<AppConfig>;
   db?: AppDatabase;
-  togetherClient?: TogetherClient;
+  codexClient?: CodexClient;
 }
 
 export interface BuiltServer {
@@ -98,13 +96,13 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Bui
   const config = getConfig(options.config);
   const db = options.db ?? openDatabase(config.dbPath);
   initializeSettings(db, {
-    model: config.model,
+    model: DEFAULT_MODEL,
     dailyBudgetUsd: config.dailyBudgetUsd,
     monthlyBudgetUsd: config.monthlyBudgetUsd,
     backendUrl: `http://${config.host}:${config.port}`
   });
 
-  const togetherClient = options.togetherClient ?? createTogetherClient(config.togetherApiKey, config.model);
+  const codexClient = options.codexClient ?? createCodexClient({ command: config.codexCliPath });
   const app = Fastify({ logger: true });
 
   await app.register(cors, {
@@ -170,15 +168,14 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Bui
     assertNonEmptyString(request.body?.topic, "topic");
     const body = request.body;
     const mode = body.mode === "cheap" ? "cheap" : "standard";
-    const requestedModel = mode === "cheap" || body.model === "standard" ? undefined : ADVANCED_MODEL;
     const styleProfile = getStyleProfile(db);
-    const analysis = await analyzeIntent(db,togetherClient,body.topic);
+    const analysis = await analyzeIntent(db,codexClient,body.topic);
     const examples = selectStyleExamples(db, `${body.topic} ${body.instructions ?? ""}`, "post");
     const recentArchiveExamples = getRecentXArchiveExamples(db, recentArchiveCutoff());
     const messages = buildPostMessages(body, styleProfile, examples);
     const response = await runCachedJsonGeneration({
       db,
-      togetherClient,
+      codexClient,
       endpoint: "generate_post",
       cacheable: false,
       cacheInput: {
@@ -186,15 +183,14 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Bui
         styleProfile,
         examples: examples.map((example) => example.id),
         blockedExamples: recentArchiveExamples.map((example) => example.id),
-        model: requestedModel ?? "default"
+        model: DEFAULT_MODEL
       },
       request: {
         messages,
         schemaName: "DraftResponse",
         schema: draftResponseSchema,
         maxTokens: mode === "cheap" ? 360 : 700,
-        temperature: mode === "cheap" ? 0.65 : 0.8,
-        ...(requestedModel ? { model: requestedModel } : {})
+        temperature: mode === "cheap" ? 0.65 : 0.8
       },
       validate: (value) => enrichDraftResponse(removeRecentArchiveCopies(validateDraftResponse(value), recentArchiveExamples),body.topic,undefined,analysis)
     });
@@ -205,11 +201,10 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Bui
     assertNonEmptyString(request.body?.sourcePost?.text, "sourcePost.text");
     const body = request.body;
     const mode = body.mode === "cheap" ? "cheap" : "standard";
-    const requestedModel = mode === "cheap" || body.model === "standard" ? undefined : ADVANCED_MODEL;
     const styleProfile = getStyleProfile(db);
     const tasteProfile = getPersonalTasteProfile(db);
     // Short separate pass: understand the source before drafting replies.
-    const analysis = await analyzeIntent(db, togetherClient, body.sourcePost.text, body.sourcePost, tasteProfile);
+    const analysis = await analyzeIntent(db, codexClient, body.sourcePost.text, body.sourcePost, tasteProfile);
     const examples = selectStyleExamples(
       db,
       `${body.sourcePost.text} ${body.angle ?? ""} ${body.instructions ?? ""}`,
@@ -220,7 +215,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Bui
     const messages = buildCommentMessages(body, styleProfile, examples, pairedExamples, analysis, tasteProfile);
     const generated = await runCachedJsonGeneration({
       db,
-      togetherClient,
+      codexClient,
       endpoint: "generate_comment",
       cacheable: false,
       cacheInput: {
@@ -230,15 +225,14 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Bui
         pairedExamples,
         blockedExamples: recentArchiveExamples.map((example) => example.id),
         intent: analysis,
-        model: requestedModel ?? "default"
+        model: DEFAULT_MODEL
       },
       request: {
         messages,
         schemaName: "DraftResponse",
         schema: draftResponseSchema,
         maxTokens: mode === "cheap" ? 620 : 760,
-        temperature: mode === "cheap" ? 0.6 : 0.75,
-        ...(requestedModel ? { model: requestedModel } : {})
+        temperature: mode === "cheap" ? 0.6 : 0.75
       },
       validate: (value) =>
         enrichDraftResponse(
@@ -248,7 +242,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Bui
           analysis
         )
     });
-    const judged = await judgeReplyTaste(db, togetherClient, body, analysis, tasteProfile, generated.data);
+    const judged = await judgeReplyTaste(db, codexClient, body, analysis, tasteProfile, generated.data);
     return {
       data: applyTasteDecision(generated.data, judged.data, analysis),
       meta: combineGenerationMeta(generated.meta, judged.meta)
@@ -258,15 +252,14 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Bui
   app.post<{ Body: GenerateRewriteRequest }>("/api/generate/rewrite", async (request) => {
     const body = validateGenerateRewriteRequest(request.body);
     const mode = body.mode === "cheap" ? "cheap" : "standard";
-    const requestedModel = mode === "cheap" || body.model === "standard" ? undefined : ADVANCED_MODEL;
     const styleProfile = getStyleProfile(db);
-    const analysis = await analyzeIntent(db,togetherClient,body.text);
+    const analysis = await analyzeIntent(db,codexClient,body.text);
     const examples = selectStyleExamples(db, `${body.text} ${body.instructions ?? ""}`, body.kind);
     const recentArchiveExamples = getRecentXArchiveExamples(db, recentArchiveCutoff());
     const messages = buildRewriteMessages(body, styleProfile, examples);
     const response = await runCachedJsonGeneration({
       db,
-      togetherClient,
+      codexClient,
       endpoint: "generate_rewrite",
       cacheable: false,
       cacheInput: {
@@ -274,15 +267,14 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Bui
         styleProfile,
         examples: examples.map((example) => example.id),
         blockedExamples: recentArchiveExamples.map((example) => example.id),
-        model: requestedModel ?? "default"
+        model: DEFAULT_MODEL
       },
       request: {
         messages,
         schemaName: "DraftResponse",
         schema: draftResponseSchema,
         maxTokens: mode === "cheap" ? 340 : 650,
-        temperature: mode === "cheap" ? 0.55 : 0.7,
-        ...(requestedModel ? { model: requestedModel } : {})
+        temperature: mode === "cheap" ? 0.55 : 0.7
       },
       validate: (value) => enrichDraftResponse(removeRecentArchiveCopies(validateDraftResponse(value), recentArchiveExamples),body.text,undefined,analysis)
     });
@@ -321,7 +313,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Bui
     const messages = buildScoreMessages(body, styleProfile, examples);
     const response = await runCachedJsonGeneration({
       db,
-      togetherClient,
+      codexClient,
       endpoint: "score_visible_posts",
       cacheInput: { body, styleProfile, examples: examples.map((example) => example.id) },
       request: {
@@ -563,7 +555,7 @@ function enrichDraftResponse(response: DraftResponse, input: string, source?: Ge
 
 async function judgeReplyTaste(
   db: AppDatabase,
-  togetherClient: TogetherClient,
+  codexClient: CodexClient,
   body: GenerateCommentRequest,
   analysis: IntentAnalysis,
   tasteProfile: ReturnType<typeof getPersonalTasteProfile>,
@@ -573,13 +565,13 @@ async function judgeReplyTaste(
   if (response.suggestions.length === 0) {
     return {
       data: fallback(),
-      meta: emptyGenerationMeta(togetherClient.defaultModel)
+      meta: emptyGenerationMeta(codexClient.defaultModel)
     };
   }
   try {
     return await runCachedJsonGeneration({
       db,
-      togetherClient,
+      codexClient,
       endpoint: "judge_reply_taste",
       cacheable: false,
       cacheInput: {
@@ -593,15 +585,14 @@ async function judgeReplyTaste(
         schemaName: "TasteDecision",
         schema: tasteDecisionSchema,
         maxTokens: 700,
-        temperature: 0.1,
-        ...(body.mode !== "cheap" && body.model === "advanced" ? { model: ADVANCED_MODEL } : {})
+        temperature: 0.1
       },
       validate: (value) => parseTasteDecision(value, response, analysis) ?? fallback()
     });
   } catch {
     return {
       data: fallback(),
-      meta: emptyGenerationMeta(togetherClient.defaultModel)
+      meta: emptyGenerationMeta(codexClient.defaultModel)
     };
   }
 }
@@ -727,7 +718,7 @@ function applyTasteDecision(response: DraftResponse, decision: TasteDecision, an
 
 async function analyzeIntent(
   db: AppDatabase,
-  togetherClient: TogetherClient,
+  codexClient: CodexClient,
   input: string,
   source?: GenerateCommentRequest["sourcePost"],
   tasteProfile?: ReturnType<typeof getPersonalTasteProfile>
@@ -736,11 +727,10 @@ async function analyzeIntent(
   try {
     const result = await runCachedJsonGeneration({
       db,
-      togetherClient,
+      codexClient,
       endpoint: "analyze_intent",
       cacheInput: { input, source, tasteProfile },
       request: {
-        model: DEFAULT_MODEL,
         messages: [
           {
             role: "system",
@@ -854,7 +844,7 @@ function combineGenerationMeta(
 
 async function runCachedJsonGeneration<T>(options: {
   db: AppDatabase;
-  togetherClient: TogetherClient;
+  codexClient: CodexClient;
   endpoint: string;
   cacheInput: unknown;
   request: JsonCompletionRequest;
@@ -870,9 +860,8 @@ async function runCachedJsonGeneration<T>(options: {
     outputTokens: number;
   };
 }> {
-  const model = getSettings(options.db).model;
   const cacheKey = cacheKeyFor({
-    model: typeof options.request.model === "string" ? options.request.model : typeof model === "string" ? model : DEFAULT_MODEL,
+    model: options.codexClient.defaultModel,
     endpoint: options.endpoint,
     input: options.cacheInput
   });
@@ -883,7 +872,7 @@ async function runCachedJsonGeneration<T>(options: {
       data: options.validate(JSON.parse(cached.responseJson)),
       meta: {
         cached: true,
-        model: typeof options.request.model === "string" ? options.request.model : options.togetherClient.defaultModel,
+        model: options.codexClient.defaultModel,
         estimatedCostUsd: cached.costUsd,
         inputTokens: cached.inputTokens,
         outputTokens: cached.outputTokens
@@ -891,9 +880,7 @@ async function runCachedJsonGeneration<T>(options: {
     };
   }
 
-  const inputTokens = estimateTokens(messagesToTokenText(options.request.messages));
-  assertWithinBudget(options.db, inputTokens, options.request.maxTokens);
-  const completion = await options.togetherClient.completeJson(options.request);
+  const completion = await options.codexClient.completeJson(options.request);
   const data = options.validate(completion.value);
   if (options.cacheable !== false) {
     saveCachedGeneration(options.db,cacheKey,JSON.stringify(data),completion.inputTokens,completion.outputTokens,completion.costUsd);
@@ -911,9 +898,9 @@ async function runCachedJsonGeneration<T>(options: {
   };
 }
 
-export function createMockTogetherClient(
+export function createMockCodexClient(
   responseFactory: (request: JsonCompletionRequest) => unknown
-): TogetherClient {
+): CodexClient {
   return {
     defaultModel: DEFAULT_MODEL,
     async completeJson(request: JsonCompletionRequest): Promise<JsonCompletionResult> {
@@ -925,7 +912,7 @@ export function createMockTogetherClient(
         outputTokens: estimateTokens(rawText),
         costUsd: 0,
         rawText,
-        model: typeof request.model === "string" && request.model.trim() ? request.model : DEFAULT_MODEL
+        model: DEFAULT_MODEL
       };
     }
   };

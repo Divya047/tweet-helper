@@ -25,6 +25,7 @@ private struct ShareComposerView: View {
     @State private var content = SharedContent()
     @State private var cards: [DraftCard] = []
     @State private var selected = 0
+    @State private var draft = ""
     @State private var loading = true
     @State private var exploring = false
     @State private var message: String?
@@ -39,11 +40,15 @@ private struct ShareComposerView: View {
                         sourceCard
                         if let card = cards[safe: selected] {
                             Text(card.recommended ? "\(card.strategy) · Recommended" : card.strategy).font(.headline)
-                            Text(card.text).font(.title3).textSelection(.enabled)
-                                .padding().frame(maxWidth: .infinity, alignment: .leading)
+                            TextEditor(text: $draft)
+                                .font(.title3)
+                                .frame(minHeight: 130)
+                                .padding(8)
                                 .background(.quaternary, in: RoundedRectangle(cornerRadius: 16))
-                            Button("Save draft for keyboard") { save(card) }
+                            Button("Save & Return to X") { save(card) }
                                 .buttonStyle(.borderedProminent).frame(maxWidth: .infinity)
+                            Button("Skip this draft", role: .destructive) { skip(card) }
+                                .buttonStyle(.bordered)
                             if cards.count > 1 {
                                 Button(exploring ? "Hide alternatives" : "Explore alternatives") { exploring.toggle() }
                                 if exploring {
@@ -51,7 +56,11 @@ private struct ShareComposerView: View {
                                         ForEach(cards.indices, id: \.self) { index in
                                             Text(cards[index].recommended ? "Recommended" : "Alt \(index)").tag(index)
                                         }
-                                    }.pickerStyle(.segmented)
+                                    }
+                                    .pickerStyle(.segmented)
+                                    .onChange(of: selected) { _, index in
+                                        draft = cards[safe: index]?.text ?? ""
+                                    }
                                 }
                             }
                         } else if message == nil { ProgressView("Drafting a reply…") }
@@ -102,6 +111,7 @@ private struct ShareComposerView: View {
         do {
             let response = try await TweetHelperAPI.generateReply(context: context, sourceURL: content.url)
             cards = DraftExploreMapper.map(response)
+            draft = cards.first?.text ?? ""
             if cards.isEmpty {
                 message = response.abstained == true
                     ? (response.abstainReason ?? "Nothing here clears your reply taste bar.")
@@ -112,15 +122,44 @@ private struct ShareComposerView: View {
 
     private func save(_ card: DraftCard) {
         do {
-            try SharedDraftStore.save(SharedDraft(
-                text: card.text,
+            guard let text = draft.nilIfBlank else { return }
+            let saved = SharedDraft(
+                text: text,
+                originalText: card.text,
                 sourceText: content.text,
                 sourceURL: content.url,
                 suggestionID: card.suggestionID,
                 contentKind: .reply
-            ))
-            message = "Saved. Open X and use the Tweet Helper keyboard to insert it."
+            )
+            try SharedDraftStore.save(saved)
+            if let payload = TasteFeedbackPayload.make(draft: saved, eventKind: .saved) {
+                try PendingTelemetryStore.enqueueFeedback(payload)
+            }
+            // A Share extension cannot write into its host app. Completing the request
+            // returns focus to X so the Tweet Helper keyboard can insert the saved text.
+            finish()
         } catch { message = "Could not save to the App Group: \(error.localizedDescription)" }
+    }
+
+    private func skip(_ card: DraftCard) {
+        let skipped = SharedDraft(
+            text: card.text,
+            originalText: card.text,
+            sourceText: content.text,
+            sourceURL: content.url,
+            suggestionID: card.suggestionID,
+            contentKind: .reply
+        )
+        do {
+            if let payload = TasteFeedbackPayload.make(draft: skipped, eventKind: .skipped) {
+                try PendingTelemetryStore.enqueueFeedback(payload)
+            }
+            cards.removeAll { $0.id == card.id }
+            selected = min(selected, max(0, cards.count - 1))
+            draft = cards[safe: selected]?.text ?? ""
+            if cards.isEmpty { finish() }
+            else { message = "Skipped. Showing the next draft." }
+        } catch { message = "Could not save skip feedback: \(error.localizedDescription)" }
     }
 
     private func finish() { extensionContext?.completeRequest(returningItems: nil) }

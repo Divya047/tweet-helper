@@ -67,6 +67,64 @@ final class TweetHelperTests: XCTestCase {
         XCTAssertEqual(object["contentKind"] as? String, "reply")
     }
 
+    func testTasteFeedbackMapsSavedEditedSkippedAndInsertedDrafts() throws {
+        let base = SharedDraft(
+            text: "Generated reply",
+            originalText: "Generated reply",
+            sourceText: "Source claim",
+            sourceURL: URL(string: "https://x.com/a/status/1"),
+            suggestionID: "suggestion-1",
+            contentKind: .reply
+        )
+        let saved = try XCTUnwrap(TasteFeedbackPayload.make(draft: base, eventKind: .saved))
+        XCTAssertEqual(saved.decision, .accepted)
+        XCTAssertEqual(saved.kind, "comment")
+        XCTAssertEqual(saved.context.eventKind, .saved)
+        XCTAssertEqual(saved.context.sourcePost?.text, "Source claim")
+        XCTAssertEqual(saved.context.sourcePost?.url, "https://x.com/a/status/1")
+
+        var editedDraft = base
+        editedDraft.text = "Sharper final reply"
+        let edited = try XCTUnwrap(TasteFeedbackPayload.make(draft: editedDraft, eventKind: .saved))
+        XCTAssertEqual(edited.decision, .edited)
+        XCTAssertEqual(edited.originalText, "Generated reply")
+        XCTAssertEqual(edited.finalText, "Sharper final reply")
+
+        let skipped = try XCTUnwrap(TasteFeedbackPayload.make(draft: base, eventKind: .skipped))
+        XCTAssertEqual(skipped.decision, .skipped)
+        XCTAssertNil(skipped.finalText)
+
+        let inserted = try XCTUnwrap(TasteFeedbackPayload.make(draft: editedDraft, eventKind: .inserted))
+        XCTAssertEqual(inserted.decision, .edited)
+        XCTAssertEqual(inserted.context.eventKind, .inserted)
+    }
+
+    func testHandwrittenDraftDoesNotCreateModelFeedback() {
+        let draft = SharedDraft(text: "My own reply", contentKind: .reply)
+        XCTAssertNil(TasteFeedbackPayload.make(draft: draft, eventKind: .saved))
+    }
+
+    func testPendingTelemetrySurvivesOfflineUntilExplicitRemoval() throws {
+        let suite = "TweetHelperTelemetryTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let draft = SharedDraft(text: "Reply", originalText: "Reply", sourceText: "Source",
+                                suggestionID: "s1", contentKind: .reply)
+        let feedback = try XCTUnwrap(TasteFeedbackPayload.make(draft: draft, eventKind: .saved))
+        let feedbackID = try PendingTelemetryStore.enqueueFeedback(feedback, defaults: defaults)
+        let outcomeID = try PendingTelemetryStore.enqueueOutcome(
+            UsedOutcomePayload(draft: draft, clientEventID: UUID()), defaults: defaults
+        )
+
+        XCTAssertEqual(PendingTelemetryStore.feedback(defaults: defaults).first?.payload, feedback)
+        XCTAssertEqual(PendingTelemetryStore.outcomes(defaults: defaults).first?.payload.finalText, "Reply")
+
+        try PendingTelemetryStore.removeFeedback(id: feedbackID, defaults: defaults)
+        try PendingTelemetryStore.removeOutcome(id: outcomeID, defaults: defaults)
+        XCTAssertTrue(PendingTelemetryStore.feedback(defaults: defaults).isEmpty)
+        XCTAssertTrue(PendingTelemetryStore.outcomes(defaults: defaults).isEmpty)
+    }
+
     func testActivityResetsAcrossDays() {
         let stale = ActivityState(dayKey: "2000-01-01", posts: 3, replies: 5).normalized()
         XCTAssertEqual(stale.posts, 0)

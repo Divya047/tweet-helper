@@ -292,7 +292,6 @@ async function findHighIntentReplies(): Promise<void> {
         contentPillar: growth.pillar,
         desiredOutcome: growth.outcome,
         mode: "cheap",
-        model: "standard",
         instructions: buildTasteAwareReplyInstructions(growth.outcome),
         regenerationSeed: `${state.sessionId}:reply:taste:${post.id ?? index}`
       }, { timeoutMs: LONG_REQUEST_TIMEOUT_MS });

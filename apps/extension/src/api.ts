@@ -1,7 +1,7 @@
 export const DEFAULT_BACKEND_URL = "http://127.0.0.1:4317";
 /** Default wait for normal backend calls. */
 export const DEFAULT_REQUEST_TIMEOUT_MS = 90_000;
-/** Score + draft flows can include a Together call and one JSON-repair retry. */
+/** Score + draft flows can include a Codex CLI run and one JSON-repair retry. */
 export const LONG_REQUEST_TIMEOUT_MS = 180_000;
 
 export async function getBackendUrl(): Promise<string> {

@@ -5,9 +5,9 @@ The iOS workspace contains a full-screen SwiftUI composer, a compact Safari Web 
 ## Targets
 
 - `TweetHelperMobile`: enter a brief or reply context with the normal iOS keyboard, generate a native 1+4 Explore set (recommended first, alternatives on demand), edit a working draft, see soft Today counts, review the saved queue, and configure backend + growth defaults in Settings.
-- `TweetHelperShare`: share text or a web URL from Chrome, X, or another app; review the recommended reply, explore alternatives, and save one to the App Group. If an app shares no usable content, `Paste Context` reads the clipboard once after a tap. Uses the same growth prefs as the main app.
+- `TweetHelperShare`: share text or a web URL from Chrome, X, or another app; review, edit, or skip drafts, then use `Save & Return to X` to save to the App Group and restore host-app focus. If an app shares no usable content, `Paste Context` reads the clipboard once after a tap. Uses the same growth prefs as the main app.
 - `TweetHelperSafari`: browse `x.com` in Safari and use a compact three-tab popup for Today, Queue, and Ideas. It reuses the Chrome feed collector for Find 8 high-intent replies and trend scans, inserts into the X web composer, and sends backend calls through a native App Group/Tailscale bridge.
-- `TweetHelperKeyboard`: large `Insert saved draft`, `Rewrite current`, `Undo`, and `Globe` actions. Inserts bump soft goals and record `used` outcomes. It has no embedded editor and never submits.
+- `TweetHelperKeyboard`: large `Insert saved draft`, `Rewrite current`, `Undo`, and `Globe` actions. Inserts bump soft goals and record both `used` outcomes and learned-taste feedback. It has no embedded editor and never submits.
 - `TweetHelperTests`: share parsing, App Group transfer, 1+4 envelope mapping, used-outcome payload, activity day reset, and rewrite/undo helper coverage.
 
 Feed-native features (high-intent reply scoring and trend scans) work in the Chrome and iPhone Safari extensions because they need live X DOM access. They are intentionally unavailable in the Share Extension and keyboard.
@@ -31,7 +31,7 @@ For a Mac reachable over a private Tailscale network:
 HOST=0.0.0.0 PORT=4317 MOBILE_AUTH_TOKEN=<long-random-token> npm run backend:dev
 ```
 
-The app calls health and generation routes with the same growth fields as the Chrome extension (`audience`, `contentPillar`, `desiredOutcome`) and a 90s request timeout. Responses prefer the native `recommendation` + `explore` envelope (falling back to `suggestions`). When the keyboard inserts a saved draft it also posts to `/api/outcomes` with `status=used`, `platform=ios`, optional `contentKind`, the final text/source pair, a stable per-insertion `clientEventId`, and any available `sessionId`/`workId`. Insertion succeeds even if that telemetry call is offline, with a visible sync error.
+The app calls health and generation routes with the same growth fields as the Chrome extension (`audience`, `contentPillar`, `desiredOutcome`) and a 90s request timeout. Responses prefer the native `recommendation` + `explore` envelope (falling back to `suggestions`). Saves, edits, skips, and keyboard inserts enqueue `/api/feedback` events for the learned taste model. Keyboard insertion also enqueues `/api/outcomes` with `status=used`, `platform=ios`, optional `contentKind`, the final text/source pair, a stable per-insertion `clientEventId`, and any available `sessionId`/`workId`. Both queues live in the App Group and retry when the app or keyboard opens, so composing and insertion remain available offline.
 
 The Share Extension accepts only plain text and `http`/`https` URLs. It processes at most twelve attachments, does not scrape the source app, and offers clipboard access only through the explicit Paste Context fallback.
 

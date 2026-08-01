@@ -4,7 +4,7 @@ Local-first X post, comment, and reaction helper.
 
 The app has two parts:
 
-- A local Fastify backend that stores your writing examples in SQLite and calls Together AI.
+- A local Fastify backend that stores your writing examples in SQLite and invokes the Codex CLI.
 - A Chrome Manifest V3 extension that adds drafting and visible-post scoring controls on X.
 - An iPhone SwiftUI app with a compact Safari feed scanner, Share Extension, and custom keyboard under `apps/ios/TweetHelperMobile`.
 
@@ -14,12 +14,13 @@ V1 never clicks Post, Reply, Like, Follow, or Repost. It only generates, ranks, 
 
 ```bash
 npm install
+codex login
 cp .env.example .env.local
 npm run build
 npm run backend:dev
 ```
 
-Set `TOGETHER_API_KEY` in `.env.local`. The default model is `MiniMaxAI/MiniMax-M3` (toggle **Advanced** in the panel to use `zai-org/GLM-5.2` per request).
+`codex login` must report **Logged in using ChatGPT**. Every AI-backed flow runs an isolated, read-only, ephemeral Codex CLI task with `gpt-5.6-luna`, so no API key is required. Check the active authentication method with `codex login status`.
 
 Optional `.env.local` values:
 
@@ -27,8 +28,7 @@ Optional `.env.local` values:
 PORT=4317
 HOST=127.0.0.1
 DB_PATH=./data/tweet-helper.sqlite
-DAILY_BUDGET_USD=2
-MONTHLY_BUDGET_USD=20
+CODEX_CLI_PATH=codex
 MOBILE_AUTH_TOKEN=
 ```
 

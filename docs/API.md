@@ -74,8 +74,7 @@ For the iPhone keyboard, `sourcePost.text` must be manually supplied context. Th
   "text": "rough draft already typed in the composer",
   "kind": "post",
   "instructions": "Make it clearer and less hypey.",
-  "mode": "standard",
-  "model": "standard"
+  "mode": "standard"
 }
 ```
 
@@ -85,7 +84,6 @@ Fields:
 - `kind`: `post` or `comment`.
 - `instructions`: optional rewrite guidance.
 - `mode`: optional `standard` or `cheap`.
-- `model`: optional `standard` or `advanced`.
 
 Response uses the same draft envelope as post/comment generation:
 
@@ -103,7 +101,7 @@ Response uses the same draft envelope as post/comment generation:
   },
   "meta": {
     "cached": false,
-    "model": "MiniMaxAI/MiniMax-M3",
+    "model": "gpt-5.6-luna",
     "estimatedCostUsd": 0,
     "inputTokens": 100,
     "outputTokens": 80

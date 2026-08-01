@@ -160,6 +160,8 @@ struct ActivityState: Codable, Equatable {
 struct SharedDraft: Codable, Equatable, Identifiable {
     let id: UUID
     var text: String
+    /// The generated text before the user made any edits. Nil for handwritten drafts.
+    var originalText: String?
     var sourceText: String?
     var sourceURL: URL?
     var suggestionID: String?
@@ -168,11 +170,13 @@ struct SharedDraft: Codable, Equatable, Identifiable {
     var contentKind: ContentKind?
     let savedAt: Date
 
-    init(id: UUID = UUID(), text: String, sourceText: String? = nil, sourceURL: URL? = nil,
+    init(id: UUID = UUID(), text: String, originalText: String? = nil,
+         sourceText: String? = nil, sourceURL: URL? = nil,
          suggestionID: String? = nil, sessionID: String? = nil, workID: String? = nil,
          contentKind: ContentKind? = nil, savedAt: Date = Date()) {
         self.id = id
         self.text = text
+        self.originalText = originalText?.nilIfBlank
         self.sourceText = sourceText?.nilIfBlank
         self.sourceURL = sourceURL
         self.suggestionID = suggestionID?.nilIfBlank
@@ -180,6 +184,124 @@ struct SharedDraft: Codable, Equatable, Identifiable {
         self.workID = workID?.nilIfBlank
         self.contentKind = contentKind
         self.savedAt = savedAt
+    }
+}
+
+enum TasteFeedbackEventKind: String, Codable {
+    case saved, skipped, inserted
+}
+
+enum TasteFeedbackDecision: String, Codable {
+    case accepted, edited, skipped
+}
+
+struct FeedbackSourcePost: Codable, Equatable {
+    let text: String
+    let url: String?
+}
+
+struct TasteFeedbackContext: Codable, Equatable {
+    let sourcePost: FeedbackSourcePost?
+    let eventKind: TasteFeedbackEventKind
+}
+
+struct TasteFeedbackPayload: Codable, Equatable {
+    let suggestionID: String
+    let kind: String
+    let decision: TasteFeedbackDecision
+    let originalText: String?
+    let finalText: String?
+    let context: TasteFeedbackContext
+
+    enum CodingKeys: String, CodingKey {
+        case suggestionID = "suggestionId", kind, decision, originalText, finalText, context
+    }
+
+    static func make(draft: SharedDraft, eventKind: TasteFeedbackEventKind) -> TasteFeedbackPayload? {
+        guard let suggestionID = draft.suggestionID else { return nil }
+        let original = draft.originalText ?? draft.text
+        let decision: TasteFeedbackDecision
+        let finalText: String?
+        if eventKind == .skipped {
+            decision = .skipped
+            finalText = nil
+        } else {
+            decision = original == draft.text ? .accepted : .edited
+            finalText = draft.text
+        }
+        let sourcePost = draft.contentKind == .reply && (draft.sourceText != nil || draft.sourceURL != nil)
+            ? FeedbackSourcePost(text: draft.sourceText ?? draft.sourceURL?.absoluteString ?? "",
+                                 url: draft.sourceURL?.absoluteString)
+            : nil
+        return TasteFeedbackPayload(
+            suggestionID: suggestionID,
+            kind: draft.contentKind == .reply ? "comment" : "post",
+            decision: decision,
+            originalText: original,
+            finalText: finalText,
+            context: TasteFeedbackContext(sourcePost: sourcePost, eventKind: eventKind)
+        )
+    }
+}
+
+struct PendingTasteFeedback: Codable, Equatable, Identifiable {
+    let id: UUID
+    let payload: TasteFeedbackPayload
+}
+
+struct PendingUsedOutcome: Codable, Equatable, Identifiable {
+    let id: UUID
+    let payload: UsedOutcomePayload
+}
+
+enum PendingTelemetryStore {
+    private static let feedbackKey = "pendingTasteFeedback.v1"
+    private static let outcomesKey = "pendingUsedOutcomes.v1"
+    static let maximumEvents = 100
+
+    static func feedback(defaults: UserDefaults = TweetHelperSettings.defaults) -> [PendingTasteFeedback] {
+        decode([PendingTasteFeedback].self, key: feedbackKey, defaults: defaults) ?? []
+    }
+
+    static func outcomes(defaults: UserDefaults = TweetHelperSettings.defaults) -> [PendingUsedOutcome] {
+        decode([PendingUsedOutcome].self, key: outcomesKey, defaults: defaults) ?? []
+    }
+
+    @discardableResult
+    static func enqueueFeedback(_ payload: TasteFeedbackPayload,
+                                defaults: UserDefaults = TweetHelperSettings.defaults) throws -> UUID {
+        let event = PendingTasteFeedback(id: UUID(), payload: payload)
+        var events = feedback(defaults: defaults)
+        events.append(event)
+        try persist(Array(events.suffix(maximumEvents)), key: feedbackKey, defaults: defaults)
+        return event.id
+    }
+
+    @discardableResult
+    static func enqueueOutcome(_ payload: UsedOutcomePayload,
+                               defaults: UserDefaults = TweetHelperSettings.defaults) throws -> UUID {
+        let event = PendingUsedOutcome(id: UUID(), payload: payload)
+        var events = outcomes(defaults: defaults)
+        events.append(event)
+        try persist(Array(events.suffix(maximumEvents)), key: outcomesKey, defaults: defaults)
+        return event.id
+    }
+
+    static func removeFeedback(id: UUID, defaults: UserDefaults = TweetHelperSettings.defaults) throws {
+        try persist(feedback(defaults: defaults).filter { $0.id != id }, key: feedbackKey, defaults: defaults)
+    }
+
+    static func removeOutcome(id: UUID, defaults: UserDefaults = TweetHelperSettings.defaults) throws {
+        try persist(outcomes(defaults: defaults).filter { $0.id != id }, key: outcomesKey, defaults: defaults)
+    }
+
+    private static func decode<T: Decodable>(_ type: T.Type, key: String, defaults: UserDefaults) -> T? {
+        guard let data = defaults.data(forKey: key) else { return nil }
+        return try? JSONDecoder().decode(type, from: data)
+    }
+
+    private static func persist<T: Encodable>(_ value: T, key: String, defaults: UserDefaults) throws {
+        defaults.set(try JSONEncoder().encode(value), forKey: key)
     }
 }
 
@@ -374,7 +496,7 @@ struct UsedOutcomePayload: Codable, Equatable {
 
 enum TweetHelperAPI {
     static var session: URLSession = .shared
-    /// Matches the extension's default wait for Together-backed generation.
+    /// Matches the extension's default wait for Codex CLI-backed generation.
     static let requestTimeout: TimeInterval = 90
 
     static func getHealth() async throws -> Bool {
@@ -438,6 +560,31 @@ enum TweetHelperAPI {
     static func recordUsed(_ draft: SharedDraft, clientEventID: UUID) async throws {
         _ = try await request(path: "/api/outcomes", method: "POST",
                               body: UsedOutcomePayload(draft: draft, clientEventID: clientEventID), includeAuth: true)
+    }
+
+    static func recordFeedback(_ payload: TasteFeedbackPayload) async throws {
+        _ = try await request(path: "/api/feedback", method: "POST", body: payload, includeAuth: true)
+    }
+
+    /// Retry durable App Group telemetry. Each event is removed only after the backend accepts it.
+    static func flushPendingFeedback() async throws {
+        for event in PendingTelemetryStore.feedback() {
+            try await recordFeedback(event.payload)
+            try PendingTelemetryStore.removeFeedback(id: event.id)
+        }
+    }
+
+    static func flushPendingOutcomes() async throws {
+        for event in PendingTelemetryStore.outcomes() {
+            _ = try await request(path: "/api/outcomes", method: "POST", body: event.payload, includeAuth: true)
+            try PendingTelemetryStore.removeOutcome(id: event.id)
+        }
+    }
+
+    static func flushPendingTelemetry() async {
+        // A failure in one endpoint must not prevent the other queue from retrying.
+        try? await flushPendingFeedback()
+        try? await flushPendingOutcomes()
     }
 
     private static func defaultReplyInstructions(growth: GrowthPreferences) -> String {

@@ -158,15 +158,13 @@ describe("shared validators", () => {
         text: "Make this clearer",
         kind: "post",
         instructions: "Keep it short.",
-        mode: "cheap",
-        model: "advanced"
+        mode: "cheap"
       })
     ).toEqual({
       text: "Make this clearer",
       kind: "post",
       instructions: "Keep it short.",
-      mode: "cheap",
-      model: "advanced"
+      mode: "cheap"
     });
 
     expect(() => validateGenerateRewriteRequest({ text: "", kind: "post" })).toThrow(/text/i);

@@ -1,8 +1,11 @@
 import { createHash } from "node:crypto";
+import { spawn } from "node:child_process";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   DEFAULT_MODEL,
   estimateTokens,
-  estimateTogetherCostUsd,
   parseJsonObject,
   type DraftResponse,
   type ScoreVisiblePostsResponse
@@ -15,8 +18,7 @@ export interface JsonCompletionRequest {
   schema: Record<string, unknown>;
   maxTokens: number;
   temperature?: number;
-  model?: string;
-  /** Per-request Together fetch timeout. Defaults to 60s. */
+  /** Per-request Codex CLI timeout. Defaults to 60s. */
   timeoutMs?: number;
 }
 
@@ -29,21 +31,25 @@ export interface JsonCompletionResult {
   model: string;
 }
 
-export interface TogetherClient {
+export interface CodexClient {
   defaultModel: string;
   completeJson(request: JsonCompletionRequest): Promise<JsonCompletionResult>;
 }
 
-export function createTogetherClient(apiKey: string | undefined, model = DEFAULT_MODEL): TogetherClient {
-  return {
-    defaultModel: model,
-    async completeJson(request) {
-      if (!apiKey) {
-        throw new Error("Missing TOGETHER_API_KEY. Add it to .env.local before generating or scoring.");
-      }
+export interface CodexInvocation {
+  prompt: string;
+  schema: Record<string, unknown>;
+  timeoutMs: number;
+}
 
-      const chosenModel = typeof request.model === "string" && request.model.trim() ? request.model : model;
-      const first = await requestJsonCompletion(apiKey, chosenModel, request);
+export type CodexRunner = (invocation: CodexInvocation) => Promise<string>;
+
+export function createCodexClient(options: { command?: string; run?: CodexRunner } = {}): CodexClient {
+  const run = options.run ?? createCodexCliRunner(options.command ?? "codex");
+  return {
+    defaultModel: DEFAULT_MODEL,
+    async completeJson(request) {
+      const first = await requestJsonCompletion(run, request);
       try {
         return {
           value: parseJsonObject(first.rawText),
@@ -51,10 +57,10 @@ export function createTogetherClient(apiKey: string | undefined, model = DEFAULT
           outputTokens: first.outputTokens,
           costUsd: first.costUsd,
           rawText: first.rawText,
-          model: chosenModel
+          model: DEFAULT_MODEL
         };
       } catch (error) {
-        const repaired = await requestJsonCompletion(apiKey, chosenModel, repairRequest(request, first.rawText));
+        const repaired = await requestJsonCompletion(run, repairRequest(request, first.rawText));
         try {
           return {
             value: parseJsonObject(repaired.rawText),
@@ -62,7 +68,7 @@ export function createTogetherClient(apiKey: string | undefined, model = DEFAULT
             outputTokens: first.outputTokens + repaired.outputTokens,
             costUsd: first.costUsd + repaired.costUsd,
             rawText: repaired.rawText,
-            model: chosenModel
+            model: DEFAULT_MODEL
           };
         } catch {
           throw error;
@@ -73,60 +79,167 @@ export function createTogetherClient(apiKey: string | undefined, model = DEFAULT
 }
 
 async function requestJsonCompletion(
-  apiKey: string,
-  model: string,
+  run: CodexRunner,
   request: JsonCompletionRequest
 ): Promise<Omit<JsonCompletionResult, "value">> {
   const timeoutMs = request.timeoutMs ?? 60_000;
-  let response: Response;
-  try {
-      response = await fetch("https://api.together.ai/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          "Content-Type": "application/json"
-        },
-        signal: AbortSignal.timeout(timeoutMs),
-        body: JSON.stringify({
-          model,
-          messages: request.messages,
-          temperature: request.temperature ?? 0.7,
-          max_tokens: request.maxTokens,
-          response_format: {
-            type: "json_schema",
-            json_schema: {
-              name: request.schemaName,
-              schema: request.schema
-            }
-          }
-        })
-      });
-  } catch (error) {
-    if (error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError")) {
-      throw new Error(`Together API timed out after ${Math.round(timeoutMs / 1000)}s. Try again.`);
+  const prompt = messagesToPrompt(request.messages, request.schemaName);
+  const rawText = await run({ prompt, schema: request.schema, timeoutMs });
+  if (!rawText.trim()) {
+    throw new Error("Codex CLI did not return a final response.");
+  }
+  return {
+    inputTokens: estimateTokens(prompt),
+    outputTokens: estimateTokens(rawText),
+    costUsd: 0,
+    rawText,
+    model: DEFAULT_MODEL
+  };
+}
+
+function createCodexCliRunner(command: string): CodexRunner {
+  let authenticationCheck: Promise<void> | undefined;
+  return async ({ prompt, schema, timeoutMs }) => {
+    authenticationCheck ??= assertChatGPTLogin(command);
+    await authenticationCheck;
+    const tempDir = await mkdtemp(join(tmpdir(), "tweet-helper-codex-"));
+    const schemaPath = join(tempDir, "schema.json");
+    const outputPath = join(tempDir, "response.json");
+    try {
+      await writeFile(schemaPath, JSON.stringify(toStrictOutputSchema(schema)), "utf8");
+      await runProcess(
+        command,
+        [
+          "exec",
+          "--ephemeral",
+          "--ignore-user-config",
+          "--skip-git-repo-check",
+          "--sandbox",
+          "read-only",
+          "--model",
+          DEFAULT_MODEL,
+          "--output-schema",
+          schemaPath,
+          "--output-last-message",
+          outputPath,
+          "--color",
+          "never",
+          "--cd",
+          tempDir,
+          "-"
+        ],
+        prompt,
+        timeoutMs
+      );
+      return await readFile(outputPath, "utf8");
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
     }
-    throw error;
+  };
+}
+
+async function assertChatGPTLogin(command: string): Promise<void> {
+  const result = await runProcess(command, ["login", "status"], undefined, 10_000);
+  if (!/logged in using chatgpt/i.test(`${result.stdout}\n${result.stderr}`)) {
+    throw new Error("Codex CLI must be signed in with ChatGPT. Run `codex login` and choose ChatGPT sign-in.");
+  }
+}
+
+function runProcess(
+  command: string,
+  args: string[],
+  stdin: string | undefined,
+  timeoutMs: number
+): Promise<{ stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const { OPENAI_API_KEY: _openAIKey, CODEX_API_KEY: _codexKey, ...subscriptionEnv } = process.env;
+    const child = spawn(command, args, { env: subscriptionEnv, stdio: ["pipe", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => { stdout = appendBounded(stdout, chunk); });
+    child.stderr.on("data", (chunk: string) => { stderr = appendBounded(stderr, chunk); });
+    child.once("error", (error) => reject(new Error(`Could not start Codex CLI (${command}): ${error.message}`)));
+    const timer = setTimeout(() => {
+      child.kill("SIGTERM");
+      reject(new Error(`Codex CLI timed out after ${Math.round(timeoutMs / 1000)}s. Try again.`));
+    }, timeoutMs);
+    child.once("close", (code) => {
+      clearTimeout(timer);
+      if (code === 0) {
+        resolve({ stdout, stderr });
+      } else {
+        reject(new Error(usefulError(stderr) ?? `Codex CLI exited with status ${code ?? "unknown"}.`));
+      }
+    });
+    child.stdin.end(stdin);
+  });
+}
+
+function messagesToPrompt(messages: ChatMessage[], schemaName: string): string {
+  return [
+    `Generate the ${schemaName} result for the conversation below.`,
+    "Do not inspect files, run commands, browse, or use tools.",
+    "Return only the final JSON value matching the supplied output schema.",
+    ...messages.map((message) => `<${message.role}>\n${message.content}\n</${message.role}>`)
+  ].join("\n\n");
+}
+
+function toStrictOutputSchema(schema: Record<string, unknown>): Record<string, unknown> {
+  return normalizeSchemaNode(schema, false) as Record<string, unknown>;
+}
+
+function normalizeSchemaNode(node: unknown, nullable: boolean): unknown {
+  if (Array.isArray(node)) {
+    return node.map((item) => normalizeSchemaNode(item, false));
+  }
+  if (!node || typeof node !== "object") {
+    return node;
   }
 
-      const body = (await response.json().catch(() => null)) as TogetherResponse | null;
-      if (!response.ok) {
-        throw new Error(body?.error?.message ?? `Together request failed with HTTP ${response.status}.`);
-      }
+  const source = node as Record<string, unknown>;
+  const result: Record<string, unknown> = { ...source };
+  if (source.properties && typeof source.properties === "object" && !Array.isArray(source.properties)) {
+    const properties = source.properties as Record<string, unknown>;
+    const originallyRequired = new Set(Array.isArray(source.required) ? source.required : []);
+    result.properties = Object.fromEntries(
+      Object.entries(properties).map(([key, value]) => [key, normalizeSchemaNode(value, !originallyRequired.has(key))])
+    );
+    result.required = Object.keys(properties);
+    result.additionalProperties = false;
+  }
+  if (source.items !== undefined) {
+    result.items = normalizeSchemaNode(source.items, false);
+  }
+  if (Array.isArray(source.anyOf)) {
+    result.anyOf = source.anyOf.map((item) => normalizeSchemaNode(item, false));
+  }
 
-      const rawText = body?.choices?.[0]?.message?.content;
-      if (!rawText) {
-        throw new Error("Together response did not include assistant content.");
-      }
+  if (!nullable) {
+    return result;
+  }
+  if (typeof result.type === "string") {
+    result.type = [result.type, "null"];
+    if (Array.isArray(result.enum) && !result.enum.includes(null)) {
+      result.enum = [...result.enum, null];
+    }
+    return result;
+  }
+  if (Array.isArray(result.type) && !result.type.includes("null")) {
+    result.type = [...result.type, "null"];
+    return result;
+  }
+  return { anyOf: [result, { type: "null" }] };
+}
 
-      const inputTokens = body?.usage?.prompt_tokens ?? estimateTokens(JSON.stringify(request.messages));
-      const outputTokens = body?.usage?.completion_tokens ?? estimateTokens(rawText);
-      return {
-        inputTokens,
-        outputTokens,
-        costUsd: estimateTogetherCostUsd(inputTokens, outputTokens),
-        rawText,
-        model
-      };
+function appendBounded(current: string, chunk: string): string {
+  return `${current}${chunk}`.slice(-16_000);
+}
+
+function usefulError(value: string): string | undefined {
+  const lines = value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  return lines.length ? lines.slice(-12).join("\n") : undefined;
 }
 
 function repairRequest(request: JsonCompletionRequest, rawText: string): JsonCompletionRequest {
@@ -286,19 +399,4 @@ export function asDraftResponse(value: unknown): DraftResponse {
 
 export function asScoreResponse(value: unknown): ScoreVisiblePostsResponse {
   return value as ScoreVisiblePostsResponse;
-}
-
-interface TogetherResponse {
-  choices?: Array<{
-    message?: {
-      content?: string;
-    };
-  }>;
-  usage?: {
-    prompt_tokens?: number;
-    completion_tokens?: number;
-  };
-  error?: {
-    message?: string;
-  };
 }

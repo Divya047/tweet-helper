@@ -1,11 +1,4 @@
-export const DEFAULT_MODEL = "MiniMaxAI/MiniMax-M3";
-export const ADVANCED_MODEL = "zai-org/GLM-5.2";
-
-export const TOGETHER_GLM_5_2_PRICING = {
-  inputPerMillion: 1.4,
-  cachedInputPerMillion: 0.26,
-  outputPerMillion: 4.4
-} as const;
+export const DEFAULT_MODEL = "gpt-5.6-luna";
 
 export type ContentKind = "post" | "comment" | "reply";
 export type FeedbackDecision = "accepted" | "edited" | "rejected" | "skipped";
@@ -163,7 +156,6 @@ export interface GeneratePostRequest {
   desiredOutcome?: DesiredOutcome;
   instructions?: string;
   mode?: "standard" | "cheap";
-  model?: "standard" | "advanced";
   regenerationSeed?: string;
 }
 
@@ -175,7 +167,6 @@ export interface GenerateCommentRequest {
   desiredOutcome?: DesiredOutcome;
   instructions?: string;
   mode?: "standard" | "cheap";
-  model?: "standard" | "advanced";
   regenerationSeed?: string;
 }
 
@@ -184,7 +175,6 @@ export interface GenerateRewriteRequest {
   kind: "post" | "comment";
   instructions?: string;
   mode?: "standard" | "cheap";
-  model?: "standard" | "advanced";
   regenerationSeed?: string;
 }
 
@@ -286,13 +276,6 @@ export function normalizeText(value: string): string {
 
 export function estimateTokens(value: string): number {
   return Math.max(1, Math.ceil(normalizeText(value).length / 4));
-}
-
-export function estimateTogetherCostUsd(inputTokens: number, outputTokens: number): number {
-  return (
-    (inputTokens / 1_000_000) * TOGETHER_GLM_5_2_PRICING.inputPerMillion +
-    (outputTokens / 1_000_000) * TOGETHER_GLM_5_2_PRICING.outputPerMillion
-  );
 }
 
 export function isReactionRecommendation(value: unknown): value is ReactionRecommendation {
@@ -561,9 +544,6 @@ export function validateGenerateRewriteRequest(value: unknown): GenerateRewriteR
   }
   if (value.mode === "cheap" || value.mode === "standard") {
     result.mode = value.mode;
-  }
-  if (value.model === "standard" || value.model === "advanced") {
-    result.model = value.model;
   }
   if (typeof value.regenerationSeed === "string" && value.regenerationSeed.trim()) {
     result.regenerationSeed = value.regenerationSeed.trim();

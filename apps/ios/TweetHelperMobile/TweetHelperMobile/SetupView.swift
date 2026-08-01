@@ -69,6 +69,8 @@ struct SetupView: View {
                                 .background(.quaternary, in: RoundedRectangle(cornerRadius: 14))
                             Button("Use this draft") { draft = card.text }
                                 .buttonStyle(.bordered)
+                            Button("Skip this draft", role: .destructive) { skip(card) }
+                                .buttonStyle(.bordered)
                             if cards.count > 1 {
                                 Button(showingAlternatives ? "Hide alternatives" : "Explore alternatives") {
                                     showingAlternatives.toggle()
@@ -125,7 +127,10 @@ struct SetupView: View {
                 }
             }
             .sheet(isPresented: $showingSettings) { SettingsView() }
-            .task { refresh() }
+            .task {
+                refresh()
+                await TweetHelperAPI.flushPendingTelemetry()
+            }
             .onChange(of: showingSettings) { _, isShowing in if !isShowing { refresh() } }
         }
     }
@@ -163,19 +168,53 @@ struct SetupView: View {
     private func saveDraft() {
         guard let text = draft.nilIfBlank else { return }
         let match = cards.first { $0.text == text }
+        let generated = match ?? selected
         do {
-            try SharedDraftStore.save(SharedDraft(
+            let saved = SharedDraft(
                 text: text,
+                originalText: generated?.text,
                 sourceText: mode == .reply ? source : brief,
-                suggestionID: match?.suggestionID,
+                suggestionID: generated?.suggestionID,
                 contentKind: mode.contentKind
-            ))
+            )
+            try SharedDraftStore.save(saved)
+            if let payload = TasteFeedbackPayload.make(draft: saved, eventKind: .saved) {
+                try PendingTelemetryStore.enqueueFeedback(payload)
+            }
             refresh(); message = "Saved. Switch to the Tweet Helper keyboard to insert it."
+            Task { await TweetHelperAPI.flushPendingTelemetry() }
         } catch { message = "Could not save the draft: \(error.localizedDescription)" }
     }
 
+    private func skip(_ card: DraftCard) {
+        let skipped = SharedDraft(
+            text: card.text,
+            originalText: card.text,
+            sourceText: mode == .reply ? source : brief,
+            suggestionID: card.suggestionID,
+            contentKind: mode.contentKind
+        )
+        do {
+            if let payload = TasteFeedbackPayload.make(draft: skipped, eventKind: .skipped) {
+                try PendingTelemetryStore.enqueueFeedback(payload)
+            }
+            cards.removeAll { $0.id == card.id }
+            selectedCard = min(selectedCard, max(0, cards.count - 1))
+            draft = cards[safe: selectedCard]?.text ?? ""
+            message = cards.isEmpty ? "Skipped. Generate again for a fresh direction." : "Skipped. Showing the next draft."
+            Task { await TweetHelperAPI.flushPendingTelemetry() }
+        } catch { message = "Could not save skip feedback: \(error.localizedDescription)" }
+    }
+
     private func remove(_ item: SharedDraft) {
-        do { try SharedDraftStore.remove(id: item.id); refresh() }
+        do {
+            if let payload = TasteFeedbackPayload.make(draft: item, eventKind: .skipped) {
+                try PendingTelemetryStore.enqueueFeedback(payload)
+            }
+            try SharedDraftStore.remove(id: item.id)
+            refresh()
+            Task { await TweetHelperAPI.flushPendingTelemetry() }
+        }
         catch { message = "Could not remove the draft." }
     }
 
