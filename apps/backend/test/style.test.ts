@@ -28,6 +28,22 @@ describe("style example selection", () => {
     expect(examples.map((example) => example.id)).not.toContain("x:recent");
   });
 
+  it("uses unique archive or manually edited examples and excludes helper outcomes", () => {
+    const db = openDatabase(":memory:");
+    upsertWritingExamples(db, [
+      { id: "edit:1", kind: "comment", text: "The constraint matters more than the tool.", source: "feedback" },
+      { id: "edit:2", kind: "comment", text: "The constraint matters more than the tool!", source: "feedback" },
+      { id: "outcome:1", kind: "comment", text: "Generated copy should not train itself.", source: "outcome" },
+      { id: "archive:1", kind: "comment", text: "An older authentic comment about constraints.", source: "x-archive", createdAt: "2025-01-01T00:00:00.000Z" }
+    ]);
+
+    const examples = selectStyleExamples(db, "constraint tool generated copy", "comment", 8);
+
+    expect(examples.filter((example) => normalizeForTest(example.text) === "the constraint matters more than the tool")).toHaveLength(1);
+    expect(examples.map((example) => example.id)).not.toContain("outcome:1");
+    expect(new Set(examples.map((example) => normalizeForTest(example.text))).size).toBe(examples.length);
+  });
+
   it("builds taste from accepted, edited, and skipped decisions", () => {
     const profile = buildPersonalTasteProfile([
       {
@@ -84,4 +100,41 @@ describe("style example selection", () => {
     expect(rebuilt.decisionCounts.edited).toBe(1);
     expect(loaded).toEqual(rebuilt);
   });
+
+  it("preserves a manual edit when publishing later accepts the edited text", () => {
+    const db = openDatabase(":memory:");
+    saveFeedback(db, {
+      suggestionId: "same",
+      kind: "comment",
+      decision: "edited",
+      originalText: "Generated wording.",
+      finalText: "My wording."
+    });
+    saveFeedback(db, {
+      suggestionId: "same",
+      kind: "comment",
+      decision: "accepted",
+      originalText: "My wording.",
+      finalText: "My wording."
+    });
+
+    const rebuilt = rebuildPersonalTasteProfile(db);
+
+    expect(rebuilt.sampleCount).toBe(1);
+    expect(rebuilt.decisionCounts.edited).toBe(1);
+    expect(rebuilt.editSignals.sampleCount).toBe(1);
+    expect(rebuilt.positiveExamples).toContain("My wording.");
+  });
+
+  it("does not merge unrelated feedback when a model reuses suggestion ids", () => {
+    const db = openDatabase(":memory:");
+    saveFeedback(db, { suggestionId: "1", kind: "comment", decision: "edited", originalText: "First generated draft.", finalText: "First edit." });
+    saveFeedback(db, { suggestionId: "1", kind: "comment", decision: "edited", originalText: "Different generated draft.", finalText: "Different edit." });
+    const profile = rebuildPersonalTasteProfile(db);
+    expect(profile.decisionCounts.edited).toBe(2);
+  });
 });
+
+function normalizeForTest(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
+}

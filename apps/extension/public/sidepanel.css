@@ -28,7 +28,9 @@ main{padding:16px;display:grid;gap:14px;overflow-wrap:anywhere}
 .source{padding:10px;border-radius:10px;background:color-mix(in srgb,CanvasText 6%,Canvas);display:grid;gap:4px}
 .source p{margin:0;color:color-mix(in srgb,CanvasText 80%,transparent)}
 .actions{display:grid;grid-template-columns:1fr 1fr;gap:8px}
-.actions button:last-child:nth-child(odd){grid-column:1 / -1}
+.queue-edit-label{font-weight:700}
+.queue-edit{min-height:110px}
+.edit-actions{display:grid;grid-template-columns:1fr 1fr;gap:8px}
 textarea,input,select{width:100%;padding:10px;border:1px solid color-mix(in srgb,CanvasText 30%,transparent);border-radius:10px;background:Canvas;color:CanvasText}
 textarea{min-height:96px}
 .growth-controls{display:grid;gap:7px;padding:12px;border-radius:12px;background:color-mix(in srgb,Highlight 7%,Canvas)}

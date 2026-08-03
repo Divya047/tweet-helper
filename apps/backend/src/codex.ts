@@ -379,6 +379,11 @@ export const scoreResponseSchema = {
           reason: { type: "string", minLength: 1, maxLength: 80 },
           suggestedAngle: { type: "string", minLength: 1, maxLength: 80 },
           topicSummary: { type: "string", minLength: 1, maxLength: 80 },
+          contributionPotential: { type: "number", minimum: 0, maximum: 100 },
+          audienceFit: { type: "number", minimum: 0, maximum: 100 },
+          novelty: { type: "number", minimum: 0, maximum: 100 },
+          risk: { type: "number", minimum: 0, maximum: 100 },
+          confidence: { type: "number", minimum: 0, maximum: 100 },
           draftSeed: { type: "string", maxLength: 120 },
           risks: {
             type: "array",

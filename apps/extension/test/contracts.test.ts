@@ -5,18 +5,22 @@ import { readFileSync } from "node:fs";
 import {
   FIND_HIGH_INTENT,
   TREND_SCAN,
+  adaptiveOpportunityMix,
   assignReplyStyles,
   buildReplyDraftInstructions,
   buildTasteAwareReplyInstructions,
   buildSingleTrendBrief,
   deriveFeedTrends,
+  emptyOpportunityLaneStats,
   mapNativeExplore,
   outcomePayloadForEvent,
   feedbackPayloadForEvent,
   REPLY_TONES,
   REPLY_VOICES,
   samplePostsForScoring,
-  sourcePostUrl
+  selectOpportunityMix,
+  sourcePostUrl,
+  updateQueuedDraft
 } from "../src/contracts.js";
 describe("MV3 side-panel and accessibility contracts", () => {
   it("uses a side panel and messaging-capable service worker without a popup", () => {
@@ -128,6 +132,20 @@ describe("MV3 side-panel and accessibility contracts", () => {
       context
     })).toMatchObject({ decision: "edited", suggestionId: "s2" });
   });
+  it("keeps generated copy when a queued draft is edited more than once", () => {
+    const queued = {
+      id: "q1",
+      draft: { id: "s1", text: "Generated wording" },
+      context: { kind: "post" as const, currentText: "" },
+      createdAt: 1
+    };
+    const first = updateQueuedDraft(queued, "  My preferred wording  ")!;
+    const second = updateQueuedDraft(first.item, "My final wording")!;
+    expect(first.item.draft.text).toBe("My preferred wording");
+    expect(second.item.generatedText).toBe("Generated wording");
+    expect(second.originalText).toBe("Generated wording");
+    expect(second.finalText).toBe("My final wording");
+  });
   it("maps verified Chrome publishes to the durable outcome API contract", () => {
     expect(outcomePayloadForEvent({
       clientEventId:"chrome-1",kind:"published",occurredAt:new Date().toISOString(),finalText:"Final reply",externalId:"123",
@@ -143,7 +161,32 @@ describe("MV3 side-panel and accessibility contracts", () => {
     expect(FIND_HIGH_INTENT.targetReplies).toBe(8);
     expect(FIND_HIGH_INTENT.maxCandidates).toBe(24);
     expect(FIND_HIGH_INTENT.maxScrolls).toBe(16);
-    expect(FIND_HIGH_INTENT.minScore).toBe(70);
+    expect(FIND_HIGH_INTENT.minScore).toBe(60);
+    expect(FIND_HIGH_INTENT.adjacentMinScore).toBe(55);
+    expect(FIND_HIGH_INTENT.wildcardMinScore).toBe(50);
+    expect(FIND_HIGH_INTENT.maxRisk).toBe(55);
+  });
+  it("selects a diverse default queue with five proven, two adjacent, and one wildcard", () => {
+    const ranked = [
+      ...[90, 85, 80, 75, 70].map((score, index) => ({ id: `p${index}`, score, recommendation: "reply" as const, reason: "fit", suggestedAngle: "add detail", topicSummary: `proven topic ${index}`, contributionPotential: score, audienceFit: score, novelty: 30, risk: 5, confidence: 85, risks: [] })),
+      ...[58, 57].map((score, index) => ({ id: `a${index}`, score, recommendation: "reply" as const, reason: "adjacent", suggestedAngle: "connect it", topicSummary: `adjacent field ${index}`, contributionPotential: 70, audienceFit: 60, novelty: 75, risk: 10, confidence: 70, risks: [] })),
+      { id: "w0", score: 52, recommendation: "reply" as const, reason: "novel", suggestedAngle: "test it", topicSummary: "unfamiliar but useful system", contributionPotential: 65, audienceFit: 50, novelty: 95, risk: 15, confidence: 60, risks: [] }
+    ];
+    const posts = ranked.map((post) => ({ id: post.id, text: post.topicSummary, author: post.id }));
+    const selected = selectOpportunityMix(ranked, posts, emptyOpportunityLaneStats());
+    expect(selected).toHaveLength(8);
+    expect(selected.filter((item) => item.lane === "proven")).toHaveLength(5);
+    expect(selected.filter((item) => item.lane === "adjacent")).toHaveLength(2);
+    expect(selected.filter((item) => item.lane === "wildcard")).toHaveLength(1);
+  });
+  it("adapts exploration only after enough insert-or-skip decisions", () => {
+    const stats = emptyOpportunityLaneStats();
+    stats.adjacent.used = 3;
+    stats.adjacent.skipped = 5;
+    expect(adaptiveOpportunityMix(stats)).toEqual({ proven: 4, adjacent: 3, wildcard: 1 });
+    stats.wildcard.used = 3;
+    stats.wildcard.skipped = 5;
+    expect(adaptiveOpportunityMix(stats)).toEqual({ proven: 4, adjacent: 2, wildcard: 2 });
   });
   it("defines a long trend scan budget and clusters scored topic summaries", () => {
     expect(TREND_SCAN.maxDurationMs).toBeGreaterThanOrEqual(120_000);

@@ -1,6 +1,6 @@
 import type { ContentKind } from "@tweet-helper/shared";
 import type { AppDatabase, WritingExample } from "./db.js";
-import { getSimilarExamples, getWritingExamples, saveStyleProfile } from "./db.js";
+import { getSimilarExamples, getWritingExamples, normalizeForStorage, saveStyleProfile } from "./db.js";
 
 export const RECENT_ARCHIVE_EXAMPLE_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -59,7 +59,7 @@ export interface TasteFeedbackRow {
 }
 
 export function rebuildStyleProfile(db: AppDatabase): StyleProfile {
-  const examples = getWritingExamples(db, 1000);
+  const examples = uniqueTrustedStyleExamples(getWritingExamples(db, 1000));
   const profile = buildStyleProfile(examples);
   saveStyleProfile(db, JSON.stringify(profile, null, 2));
   return profile;
@@ -195,14 +195,33 @@ export function buildStyleProfile(examples: WritingExample[]): StyleProfile {
 
 export function selectStyleExamples(db: AppDatabase, query: string, kind: ContentKind, limit = 8): WritingExample[] {
   const cutoff = new Date(Date.now() - RECENT_ARCHIVE_EXAMPLE_WINDOW_MS).toISOString();
-  const similar = getSimilarExamples(db, query, kind, limit, { excludeXArchiveCreatedAtSince: cutoff });
+  const similar = uniqueTrustedStyleExamples(
+    getSimilarExamples(db, query, kind, Math.max(limit * 8, limit), { excludeXArchiveCreatedAtSince: cutoff })
+  ).slice(0, limit);
   if (similar.length > 0) {
     return similar;
   }
-  return getWritingExamples(db, limit * 3)
+  return uniqueTrustedStyleExamples(getWritingExamples(db, 1000))
     .filter((example) => example.kind === kind || example.kind !== "post")
     .filter((example) => !isRecentXArchiveExample(example, cutoff))
     .slice(0, limit);
+}
+
+/**
+ * Style must come from the user's archive or an explicit manual edit. Published
+ * helper output remains available for outcomes/taste, but cannot train itself.
+ */
+function uniqueTrustedStyleExamples(examples: WritingExample[]): WritingExample[] {
+  const seen = new Set<string>();
+  return examples.filter((example) => {
+    if (example.source !== "x-archive" && example.source !== "feedback") return false;
+    const normalized = normalizeForStorage(example.text);
+    if (!normalized) return false;
+    const key = `${example.kind}:${normalized}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function isRecentXArchiveExample(example: WritingExample, cutoff: string): boolean {
@@ -252,12 +271,27 @@ function getLatestTasteFeedback(db: AppDatabase, limit = 300): TasteFeedbackRow[
      ORDER BY created_at DESC, rowid DESC
      LIMIT ?`
   ).all(limit) as unknown as TasteFeedbackRow[];
-  const seen = new Set<string>();
-  return rows.filter((row) => {
-    if (seen.has(row.suggestionId)) return false;
-    seen.add(row.suggestionId);
-    return true;
-  });
+  const selected = new Map<string, TasteFeedbackRow>();
+  for (const row of rows) {
+    // Model suggestion IDs are often reused (for example "1", "2", "3") in
+    // unrelated generations. Pair the ID with its original text so unrelated
+    // feedback cannot overwrite another signal, while exact retries collapse.
+    const original = normalizeForStorage(row.originalText ?? row.finalText ?? "");
+    const key = `${row.suggestionId}:${original}`;
+    if (!selected.has(key)) selected.set(key, row);
+  }
+  const signals = [...selected.values()];
+  const editedFinals = new Set(
+    signals
+      .filter((row) => row.decision === "edited" && row.finalText)
+      .map((row) => `${row.suggestionId}:${normalizeForStorage(row.finalText!)}`)
+  );
+  // Publishing an already-edited draft records a later "accepted" event for
+  // the edited text. Keep the edit pair and discard that redundant acceptance.
+  return signals.filter((row) =>
+    row.decision !== "accepted"
+    || !editedFinals.has(`${row.suggestionId}:${normalizeForStorage(row.finalText ?? "")}`)
+  );
 }
 
 function getPublishedTasteSignals(db: AppDatabase, limit = 100): TasteFeedbackRow[] {

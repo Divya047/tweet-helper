@@ -239,6 +239,11 @@ export interface ScoredPost {
   suggestedAngle: string;
   /** Ultra-short plain-language summary of what the post is about (for fast queue review). */
   topicSummary?: string;
+  contributionPotential?: number;
+  audienceFit?: number;
+  novelty?: number;
+  risk?: number;
+  confidence?: number;
   draftSeed?: string;
   risks: string[];
 }
@@ -510,6 +515,11 @@ export function validateScoreVisiblePostsResponse(value: unknown): ScoreVisibleP
     };
     if (typeof item.topicSummary === "string" && item.topicSummary.trim()) {
       result.topicSummary = item.topicSummary.trim().slice(0, 120);
+    }
+    for (const field of ["contributionPotential", "audienceFit", "novelty", "risk", "confidence"] as const) {
+      if (typeof item[field] === "number" && Number.isFinite(item[field])) {
+        result[field] = Math.min(100, Math.max(0, item[field]));
+      }
     }
     if (typeof item.draftSeed === "string") {
       result.draftSeed = item.draftSeed;

@@ -262,6 +262,8 @@ export function buildScoreMessages(
         "For each post, also write topicSummary: an ultra-short plain-language summary of what the post is about (max 12 words).",
         "topicSummary must describe the subject matter only — not why to reply, not the score rationale, and not the author handle.",
         "Keep reason and suggestedAngle under 12 words each. Prefer empty risks unless there is a clear spam/bait risk.",
+        "Score five dimensions from 0-100: contributionPotential, audienceFit, novelty, risk, and confidence.",
+        "Novelty means different from the other visible opportunities without becoming irrelevant. Risk rises for bait, noise, weak context, or promotion.",
         "Do not include draftSeed unless it is under 12 words.",
         "Return only valid JSON matching the schema. Be concise — ranking speed matters."
       ].join("\n")
@@ -293,7 +295,7 @@ export function buildScoreMessages(
             "spam/ragebait risk",
             "comment-bait / reply-harvesting risk"
           ],
-          requiredOutput: "rank each input post with score, recommendation, reason, suggestedAngle, topicSummary, optional draftSeed, risks"
+          requiredOutput: "rank each input post with score, recommendation, reason, suggestedAngle, topicSummary, contributionPotential, audienceFit, novelty, risk, confidence, optional draftSeed, risks"
         },
         null,
         2

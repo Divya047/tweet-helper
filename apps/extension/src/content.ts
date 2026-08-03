@@ -7,7 +7,7 @@ import {
 import { postJson } from "./api.js";
 import type { ClientEvent, ComposerContext, ExtensionMessage, QueueInsertResult, QueueItem } from "./contracts.js";
 import { buildTasteAwareReplyInstructions, stableId } from "./contracts.js";
-import { expandTruncatedPostText, extractVisiblePosts, collectFeedPosts, findComposers, findTweetArticle, getComposerActionPlacement, getComposerContext, getComposerText, insertTextIntoComposer, isComposerElement } from "./dom.js";
+import { expandTruncatedPostText, extractVisiblePosts, collectFeedPosts, findComposers, findTweetArticle, getComposerActionPlacement, getComposerContext, getComposerText, getFocusedComposer, insertTextIntoComposer, isComposerElement } from "./dom.js";
 import { hasPublishSuccessEvidence, PublishTracker, statusIdFromUrl } from "./publish.js";
 
 const ACTION_CLASS = "tweet-helper-action";
@@ -284,12 +284,16 @@ function showTasteAbstention(composer: HTMLElement, reason?: string): void {
   }, 4_000);
 }
 async function handleMessage(message: ExtensionMessage): Promise<unknown> {
-  if (message.type === "COMPOSER_CONTEXT") return focusedComposer ? getComposerContext(focusedComposer) : undefined;
+  if (message.type === "COMPOSER_CONTEXT") {
+    const composer = focusedComposer?.isConnected ? focusedComposer : getFocusedComposer();
+    if (composer) focusedComposer = composer;
+    return composer ? getComposerContext(composer) : undefined;
+  }
   if (message.type === "INSERT_QUEUE_NEXT") {
-    const composers = [
-      ...(focusedComposer?.isConnected ? [focusedComposer] : []),
-      ...findComposers().filter((composer) => composer !== focusedComposer)
-    ];
+    // On iPhone, opening Safari's extension sheet blurs X and can overlap with
+    // X mounting/replacing the reply editor. Preserve the last editor, but also
+    // give the live DOM a short window to settle before reporting no composer.
+    const composers = await waitForComposers();
     if (!composers.length) {
       return { inserted: false, reason: "Focus the composer where you want to insert this draft first." } satisfies QueueInsertResult;
     }
@@ -350,6 +354,20 @@ async function handleMessage(message: ExtensionMessage): Promise<unknown> {
     }
   }
   return undefined;
+}
+
+async function waitForComposers(): Promise<HTMLElement[]> {
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const fallback = getFocusedComposer();
+    const preferred = focusedComposer?.isConnected ? focusedComposer : fallback;
+    const composers = [
+      ...(preferred ? [preferred] : []),
+      ...findComposers().filter((composer) => composer !== preferred)
+    ];
+    if (composers.length) return composers;
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 100));
+  }
+  return [];
 }
 
 function openSourcePost(target: { id?: string; url?: string; text: string }): { found: boolean } {

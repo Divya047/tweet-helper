@@ -9,20 +9,25 @@ import {
 } from "@tweet-helper/shared";
 import { LONG_REQUEST_TIMEOUT_MS, postJson } from "./api.js";
 import { normalizeActivity } from "./activity.js";
-import type { ComposerContext, Draft, ExtensionMessage, ExtensionState, FeedTrend, QueueInsertResult, QueueItem } from "./contracts.js";
+import type { ComposerContext, Draft, ExtensionMessage, ExtensionState, FeedTrend, OpportunityLaneStats, QueueInsertResult, QueueItem } from "./contracts.js";
 import {
   buildTasteAwareReplyInstructions,
   buildSingleTrendBrief,
   deriveFeedTrends,
+  emptyOpportunityLaneStats,
   FIND_HIGH_INTENT,
   mapNativeExplore,
   samplePostsForScoring,
+  selectOpportunityMix,
   sourcePostUrl,
   stableId,
-  TREND_SCAN
+  TREND_SCAN,
+  updateQueuedDraft,
+  recordOpportunityOutcome
 } from "./contracts.js";
 
 const GROWTH_STORAGE_KEY = "growthPreferences";
+const OPPORTUNITY_STATS_STORAGE_KEY = "opportunityLaneStats";
 
 type View = "today" | "queue" | "explore";
 
@@ -33,7 +38,9 @@ let explore: Draft[] = [];
 let trends: FeedTrend[] = [];
 let exploreBrief = "";
 let trendScanning = false;
+let editingQueueItemId: string | undefined;
 let growth: GrowthPreferences = { ...DEFAULT_GROWTH_PREFERENCES };
+let opportunityStats: OpportunityLaneStats = emptyOpportunityLaneStats();
 const app = document.getElementById("app")!;
 const status = document.getElementById("status")!;
 
@@ -52,6 +59,7 @@ document.querySelectorAll<HTMLButtonElement>("nav button").forEach((button) => b
 
 async function bootstrap(): Promise<void> {
   growth = await loadGrowthPreferences();
+  opportunityStats = await loadOpportunityStats();
   await refresh();
 }
 
@@ -75,6 +83,9 @@ function renderQueue(): void {
   app.innerHTML = `<h1>Queue</h1><button id="findReplies" class="primary">Find 8 high-intent replies</button><span class="muted">Auto-scrolls your X feed, scores posts, and queues the top ${FIND_HIGH_INTENT.targetReplies}. Open a source post, hit Reply on X, then Insert.</span>${state.queue.length ? state.queue.map((item, index) => renderQueueCard(item, index)).join("") : `<div class="card muted">No drafts queued. Explore post alternatives, or find high-intent replies.</div>`}`;
   document.getElementById("findReplies")?.addEventListener("click", () => void findHighIntentReplies());
   app.querySelectorAll<HTMLButtonElement>("[data-open]").forEach((button) => button.addEventListener("click", () => void openQueuePost(button.dataset.open!)));
+  app.querySelectorAll<HTMLButtonElement>("[data-edit]").forEach((button) => button.addEventListener("click", () => beginQueueEdit(button.dataset.edit!)));
+  app.querySelectorAll<HTMLButtonElement>("[data-save-edit]").forEach((button) => button.addEventListener("click", () => void saveQueueEdit(button.dataset.saveEdit!)));
+  app.querySelectorAll<HTMLButtonElement>("[data-cancel-edit]").forEach((button) => button.addEventListener("click", cancelQueueEdit));
   app.querySelectorAll<HTMLButtonElement>("[data-insert]").forEach((button) => button.addEventListener("click", () => void insertQueue(button.dataset.insert!)));
   app.querySelectorAll<HTMLButtonElement>("[data-remove]").forEach((button) => button.addEventListener("click", () => void removeQueue(button.dataset.remove!)));
 }
@@ -86,7 +97,59 @@ function renderQueueCard(item: QueueItem, index: number): string {
     ? `<div class="source"><span class="muted">About</span><p>${escapeHtml(truncateText(summary, 100))}</p></div>`
     : "";
   const openButton = canOpen ? `<button data-open="${item.id}" class="primary">Open post</button>` : "";
-  return `<article class="card"><span class="strategy">${escapeHtml(item.draft.strategy ?? "Queued")}</span>${source}<strong>${index + 1}. ${escapeHtml(item.draft.text)}</strong><div class="actions">${openButton}<button data-insert="${item.id}"${canOpen ? "" : ` class="primary"`}>Insert</button><button data-remove="${item.id}">Skip</button></div></article>`;
+  const copy = editingQueueItemId === item.id
+    ? `<label class="queue-edit-label" for="queue-edit-${item.id}">${index + 1}. Edit draft</label><textarea id="queue-edit-${item.id}" class="queue-edit" aria-label="Edit queued draft">${escapeHtml(item.draft.text)}</textarea><div class="edit-actions"><button data-cancel-edit="${item.id}">Cancel</button><button data-save-edit="${item.id}" class="primary">Save edit</button></div>`
+    : `<strong>${index + 1}. ${escapeHtml(item.draft.text)}</strong>`;
+  return `<article class="card"><span class="strategy">${escapeHtml(item.draft.strategy ?? "Queued")}</span>${source}${copy}<div class="actions queue-actions">${openButton}<button data-insert="${item.id}"${canOpen ? "" : ` class="primary"`}>Insert</button><button data-edit="${item.id}">Edit text</button><button data-remove="${item.id}">Skip</button></div></article>`;
+}
+
+function beginQueueEdit(id: string): void {
+  editingQueueItemId = id;
+  renderQueue();
+  const editor = document.getElementById(`queue-edit-${id}`) as HTMLTextAreaElement | null;
+  editor?.focus();
+  editor?.setSelectionRange(editor.value.length, editor.value.length);
+}
+
+function cancelQueueEdit(): void {
+  editingQueueItemId = undefined;
+  renderQueue();
+}
+
+async function saveQueueEdit(id: string): Promise<void> {
+  const index = state.queue.findIndex((item) => item.id === id);
+  const editor = document.getElementById(`queue-edit-${id}`) as HTMLTextAreaElement | null;
+  const item = state.queue[index];
+  if (!item || !editor) return;
+  if (!editor.value.trim()) {
+    setStatus("A queued draft cannot be empty.");
+    editor.focus();
+    return;
+  }
+  const edit = updateQueuedDraft(item, editor.value);
+  editingQueueItemId = undefined;
+  if (!edit) {
+    setStatus("No changes to save.");
+    renderQueue();
+    return;
+  }
+  state.queue[index] = edit.item;
+  await persist();
+  await chrome.runtime!.sendMessage({
+    type: "RECORD_EVENT",
+    event: {
+      clientEventId: stableId("queue-edit"),
+      kind: "edit",
+      occurredAt: new Date().toISOString(),
+      suggestionId: item.draft.id,
+      originalText: edit.originalText,
+      finalText: edit.finalText,
+      context: item.context
+    }
+  } satisfies ExtensionMessage);
+  if (item.opportunityLane) await trackOpportunity(item.opportunityLane, "edited");
+  setStatus("Draft updated. This edit was saved for future suggestions.");
+  renderQueue();
 }
 function renderExplore(): void {
   const trendChips = trends.length
@@ -269,17 +332,14 @@ async function findHighIntentReplies(): Promise<void> {
       desiredOutcome: growth.outcome
     }, { timeoutMs: LONG_REQUEST_TIMEOUT_MS });
     const postsById = new Map(posts.map((post) => [post.id, post]));
-    const opportunities = scored.data.rankedPosts
-      .filter((post) => post.recommendation === "reply" && post.score >= FIND_HIGH_INTENT.minScore)
-      .sort((left, right) => right.score - left.score)
-      .flatMap((score) => {
+    const opportunities = selectOpportunityMix(scored.data.rankedPosts, posts, opportunityStats, targetCount)
+      .flatMap(({ score, lane }) => {
         const post = postsById.get(score.id);
-        return post ? [{ score, post }] : [];
-      })
-      .slice(0, targetCount);
+        return post ? [{ score, post, lane }] : [];
+      });
 
     if (!opportunities.length) {
-      return setStatus(`Scanned ${posts.length} posts — none scored ${FIND_HIGH_INTENT.minScore}+ for a high-intent reply. Try another feed.`);
+      return setStatus(`Scanned ${posts.length} posts — none passed the safe exploration floor. Try another feed.`);
     }
 
     setStatus(`Drafting top ${opportunities.length} high-intent ${opportunities.length === 1 ? "reply" : "replies"}…`);
@@ -313,20 +373,24 @@ async function findHighIntentReplies(): Promise<void> {
         draft: {
           id: suggestion.id,
           text: suggestion.text,
-          strategy: `${opportunity.score.score}/100 · ${suggestion.strategy ?? result.data.tasteDecision?.stance ?? "Taste pick"} · ${opportunity.score.suggestedAngle}`,
+          strategy: `${laneLabel(opportunity.lane)} · ${opportunity.score.score}/100 · ${suggestion.strategy ?? result.data.tasteDecision?.stance ?? "Taste pick"} · ${opportunity.score.suggestedAngle}`,
           recommended: true
         },
+        opportunityLane: opportunity.lane,
         context: { kind: "reply", currentText: "", target: opportunity.post },
         ...(sourceSummary ? { sourceSummary } : {}),
         createdAt: Date.now()
       });
+      opportunityStats = recordOpportunityOutcome(opportunityStats, opportunity.lane, "shown");
       added += 1;
     });
 
     if (!state.activeQueueItemId && state.queue[0]) state.activeQueueItemId = state.queue[0].id;
     await persist();
+    await persistOpportunityStats();
     const shortfall = targetCount > added ? ` Wanted ${targetCount}; only ${added} cleared the bar.` : "";
-    setStatus(`${added} high-intent ${added === 1 ? "reply" : "replies"} queued.${shortfall} Open each post, then Insert.`);
+    const laneCounts = countOpportunityLanes(state.queue.slice(-added));
+    setStatus(`${added} replies queued: ${laneCounts.proven} proven, ${laneCounts.adjacent} adjacent, ${laneCounts.wildcard} wildcard.${shortfall} Open each post, then Insert.`);
     renderQueue();
   } catch (error) {
     setStatus(error instanceof Error ? error.message : "Failed to find high-intent replies. Try again.");
@@ -411,6 +475,7 @@ async function insertQueue(id: string): Promise<void> {
   state.queue = state.queue.filter((entry) => entry.id !== id);
   setActiveToFirst();
   await persist();
+  if (item.opportunityLane) await trackOpportunity(item.opportunityLane, "used");
   setStatus(item.context.kind === "reply" ? "Reply inserted." : "Post inserted.");
   renderQueue();
 }
@@ -432,7 +497,43 @@ async function removeQueue(id: string): Promise<void> {
     } satisfies ExtensionMessage);
   }
   await persist();
+  if (skipped?.opportunityLane) await trackOpportunity(skipped.opportunityLane, "skipped");
   renderQueue();
+}
+
+async function loadOpportunityStats(): Promise<OpportunityLaneStats> {
+  const defaults = emptyOpportunityLaneStats();
+  const stored = (await chrome.storage!.local!.get(OPPORTUNITY_STATS_STORAGE_KEY))[OPPORTUNITY_STATS_STORAGE_KEY];
+  if (!stored || typeof stored !== "object") return defaults;
+  const value = stored as Partial<OpportunityLaneStats>;
+  for (const lane of ["proven", "adjacent", "wildcard"] as const) {
+    for (const outcome of ["shown", "used", "edited", "skipped"] as const) {
+      const count = value[lane]?.[outcome];
+      if (typeof count === "number" && Number.isFinite(count) && count >= 0) defaults[lane][outcome] = Math.floor(count);
+    }
+  }
+  return defaults;
+}
+
+async function trackOpportunity(lane: QueueItem["opportunityLane"], outcome: "used" | "edited" | "skipped"): Promise<void> {
+  if (!lane) return;
+  opportunityStats = recordOpportunityOutcome(opportunityStats, lane, outcome);
+  await persistOpportunityStats();
+}
+
+async function persistOpportunityStats(): Promise<void> {
+  await chrome.storage!.local!.set({ [OPPORTUNITY_STATS_STORAGE_KEY]: opportunityStats });
+}
+
+function laneLabel(lane: QueueItem["opportunityLane"]): string {
+  return lane === "adjacent" ? "Adjacent" : lane === "wildcard" ? "Wildcard" : "Proven";
+}
+
+function countOpportunityLanes(items: QueueItem[]): { proven: number; adjacent: number; wildcard: number } {
+  return items.reduce((counts, item) => {
+    if (item.opportunityLane) counts[item.opportunityLane] += 1;
+    return counts;
+  }, { proven: 0, adjacent: 0, wildcard: 0 });
 }
 function setActiveToFirst(): void {
   const first = state.queue[0]?.id;

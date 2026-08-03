@@ -230,7 +230,15 @@ export function getFocusedComposer(root: Document = document): HTMLElement | und
   if (isComposerElement(active)) {
     return active;
   }
-  return findComposers(root)[0];
+  const composers = findComposers(root);
+  return composers.find(isVisibleComposer) ?? composers[0];
+}
+
+function isVisibleComposer(composer: HTMLElement): boolean {
+  if (composer.hidden || composer.getAttribute("aria-hidden") === "true") return false;
+  if (composer.closest('[hidden], [aria-hidden="true"]')) return false;
+  const rect = composer.getBoundingClientRect();
+  return rect.width > 0 && rect.height > 0;
 }
 
 export function getComposerText(composer: HTMLElement): string {

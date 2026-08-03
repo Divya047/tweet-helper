@@ -1,4 +1,4 @@
-import type { FeedbackRequest, OutcomeRequest } from "@tweet-helper/shared";
+import type { FeedbackRequest, OutcomeRequest, ScoredPost } from "@tweet-helper/shared";
 
 export type ComposerKind = "post" | "reply";
 export type EventKind = "insert" | "edit" | "skip" | "published";
@@ -15,10 +15,189 @@ export interface Draft { id: string; text: string; strategy?: string; recommende
 export interface QueueItem {
   id: string;
   draft: Draft;
+  /** The generated copy before any queue edits, retained for taste learning. */
+  generatedText?: string;
+  opportunityLane?: OpportunityLane;
   context: ComposerContext;
   createdAt: number;
   /** Ultra-short summary of the source post topic for fast queue review. */
   sourceSummary?: string;
+}
+
+export type OpportunityLane = "proven" | "adjacent" | "wildcard";
+export type OpportunityOutcome = "shown" | "used" | "edited" | "skipped";
+export type OpportunityLaneStats = Record<OpportunityLane, Record<OpportunityOutcome, number>>;
+export interface OpportunityMix { proven: number; adjacent: number; wildcard: number }
+export interface OpportunitySelection { score: ScoredPost; lane: OpportunityLane }
+
+export const DEFAULT_OPPORTUNITY_MIX: OpportunityMix = { proven: 5, adjacent: 2, wildcard: 1 };
+
+export function emptyOpportunityLaneStats(): OpportunityLaneStats {
+  return {
+    proven: { shown: 0, used: 0, edited: 0, skipped: 0 },
+    adjacent: { shown: 0, used: 0, edited: 0, skipped: 0 },
+    wildcard: { shown: 0, used: 0, edited: 0, skipped: 0 }
+  };
+}
+
+export function adaptiveOpportunityMix(stats: OpportunityLaneStats): OpportunityMix {
+  const adjacent = laneUseRate(stats.adjacent);
+  const wildcard = laneUseRate(stats.wildcard);
+  if (wildcard.decisions >= 8 && wildcard.rate >= 0.3) return { proven: 4, adjacent: 2, wildcard: 2 };
+  if (adjacent.decisions >= 8 && adjacent.rate >= 0.3) return { proven: 4, adjacent: 3, wildcard: 1 };
+  if (adjacent.decisions >= 8 && adjacent.rate <= 0.1) return { proven: 6, adjacent: 1, wildcard: 1 };
+  return { ...DEFAULT_OPPORTUNITY_MIX };
+}
+
+export function recordOpportunityOutcome(
+  stats: OpportunityLaneStats,
+  lane: OpportunityLane,
+  outcome: OpportunityOutcome
+): OpportunityLaneStats {
+  return {
+    ...stats,
+    [lane]: { ...stats[lane], [outcome]: stats[lane][outcome] + 1 }
+  };
+}
+
+/** Build a safe, diverse queue instead of taking the eight highest totals. */
+export function selectOpportunityMix(
+  rankedPosts: ScoredPost[],
+  posts: PostContext[],
+  stats: OpportunityLaneStats,
+  target = FIND_HIGH_INTENT.targetReplies
+): OpportunitySelection[] {
+  const postById = new Map(posts.map((post) => [post.id, post]));
+  const safe = rankedPosts.filter((post) =>
+    post.recommendation === "reply" && (post.risk ?? riskFromFlags(post.risks)) <= FIND_HIGH_INTENT.maxRisk
+  );
+  const mix = adaptiveOpportunityMix(stats);
+  const chosen: OpportunitySelection[] = [];
+  const ids = new Set<string>();
+  const add = (score: ScoredPost, lane: OpportunityLane): void => {
+    if (ids.has(score.id) || chosen.length >= target) return;
+    ids.add(score.id);
+    chosen.push({ score, lane });
+  };
+  const selectedPosts = (): ScoredPost[] => chosen.map((item) => item.score);
+
+  takeDiverse(safe.filter((post) => post.score >= FIND_HIGH_INTENT.minScore), mix.proven, selectedPosts, postById, "quality")
+    .forEach((score) => add(score, "proven"));
+  takeDiverse(safe.filter((post) => post.score >= FIND_HIGH_INTENT.adjacentMinScore && !ids.has(post.id)), mix.adjacent, selectedPosts, postById, "balanced")
+    .forEach((score) => add(score, "adjacent"));
+  takeDiverse(safe.filter((post) => post.score >= FIND_HIGH_INTENT.wildcardMinScore && !ids.has(post.id)), mix.wildcard, selectedPosts, postById, "novelty")
+    .forEach((score) => add(score, "wildcard"));
+
+  const fallback = safe
+    .filter((post) => post.score >= FIND_HIGH_INTENT.wildcardMinScore && !ids.has(post.id))
+    .sort((left, right) => opportunityQuality(right) - opportunityQuality(left));
+  for (const score of fallback) {
+    const lane: OpportunityLane = score.score >= FIND_HIGH_INTENT.minScore
+      ? "proven"
+      : score.score >= FIND_HIGH_INTENT.adjacentMinScore ? "adjacent" : "wildcard";
+    add(score, lane);
+  }
+  return chosen;
+}
+
+function takeDiverse(
+  candidates: ScoredPost[],
+  count: number,
+  selected: () => ScoredPost[],
+  postById: Map<string | undefined, PostContext>,
+  mode: "quality" | "balanced" | "novelty"
+): ScoredPost[] {
+  const pool = [...candidates];
+  const result: ScoredPost[] = [];
+  while (result.length < count && pool.length) {
+    const context = [...selected(), ...result];
+    pool.sort((left, right) => laneRank(right, context, postById, mode) - laneRank(left, context, postById, mode));
+    result.push(pool.shift()!);
+  }
+  return result;
+}
+
+function laneRank(
+  post: ScoredPost,
+  selected: ScoredPost[],
+  postById: Map<string | undefined, PostContext>,
+  mode: "quality" | "balanced" | "novelty"
+): number {
+  const quality = opportunityQuality(post);
+  const novelty = opportunityNovelty(post, selected, postById);
+  if (mode === "quality") return quality * 0.82 + novelty * 0.18;
+  if (mode === "balanced") return quality * 0.5 + novelty * 0.5;
+  return quality * 0.25 + novelty * 0.75;
+}
+
+function opportunityQuality(post: ScoredPost): number {
+  const contribution = post.contributionPotential ?? post.score;
+  const audience = post.audienceFit ?? post.score;
+  const confidence = post.confidence ?? post.score;
+  const risk = post.risk ?? riskFromFlags(post.risks);
+  return contribution * 0.4 + audience * 0.3 + confidence * 0.15 + post.score * 0.15 - risk * 0.35;
+}
+
+function opportunityNovelty(
+  post: ScoredPost,
+  selected: ScoredPost[],
+  postById: Map<string | undefined, PostContext>
+): number {
+  if (!selected.length) return post.novelty ?? 100;
+  const topic = post.topicSummary ?? postById.get(post.id)?.text ?? "";
+  const author = postById.get(post.id)?.author;
+  let maxSimilarity = 0;
+  for (const other of selected) {
+    const otherTopic = other.topicSummary ?? postById.get(other.id)?.text ?? "";
+    let similarity = textSimilarity(topic, otherTopic);
+    const otherAuthor = postById.get(other.id)?.author;
+    if (author && otherAuthor && author === otherAuthor) similarity = Math.max(similarity, 0.8);
+    maxSimilarity = Math.max(maxSimilarity, similarity);
+  }
+  const derived = (1 - maxSimilarity) * 100;
+  return post.novelty === undefined ? derived : (derived + post.novelty) / 2;
+}
+
+function textSimilarity(left: string, right: string): number {
+  const tokens = (value: string): Set<string> => new Set(value.toLowerCase().match(/[a-z0-9]{3,}/g) ?? []);
+  const a = tokens(left);
+  const b = tokens(right);
+  const union = new Set([...a, ...b]);
+  if (!union.size) return 0;
+  let overlap = 0;
+  for (const token of a) if (b.has(token)) overlap += 1;
+  return overlap / union.size;
+}
+
+function riskFromFlags(risks: string[]): number {
+  return Math.min(100, risks.length * 25);
+}
+
+function laneUseRate(stats: Record<OpportunityOutcome, number>): { decisions: number; rate: number } {
+  const decisions = stats.used + stats.skipped;
+  return { decisions, rate: decisions ? stats.used / decisions : 0 };
+}
+
+export interface QueueDraftEdit {
+  item: QueueItem;
+  originalText: string;
+  finalText: string;
+}
+
+/** Replace queued copy while retaining the generated version as learning input. */
+export function updateQueuedDraft(item: QueueItem, nextText: string): QueueDraftEdit | undefined {
+  const finalText = nextText.trim();
+  if (!finalText || finalText === item.draft.text) return undefined;
+  const originalText = item.generatedText ?? item.draft.text;
+  return {
+    item: {
+      ...item,
+      generatedText: originalText,
+      draft: { ...item.draft, text: finalText }
+    },
+    originalText,
+    finalText
+  };
 }
 export interface QueueInsertResult {
   inserted: boolean;
@@ -82,7 +261,10 @@ export const FIND_HIGH_INTENT = {
   maxScrolls: 16,
   scrollPauseMs: 650,
   stagnantLimit: 2,
-  minScore: 70
+  minScore: 60,
+  adjacentMinScore: 55,
+  wildcardMinScore: 50,
+  maxRisk: 55
 } as const;
 
 /** Long feed scroll used to surface circulating topics for original post ideas. */

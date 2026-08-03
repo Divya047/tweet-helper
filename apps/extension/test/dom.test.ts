@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from "vitest";
-import { expandTruncatedPostText, extractVisiblePosts, collectFeedPosts, findComposers, findTweetArticle, getComposerActionPlacement, getComposerContext, getNearestSourcePost, insertTextIntoComposer } from "../src/dom.js";
+import { expandTruncatedPostText, extractVisiblePosts, collectFeedPosts, findComposers, findTweetArticle, getComposerActionPlacement, getComposerContext, getFocusedComposer, getNearestSourcePost, insertTextIntoComposer } from "../src/dom.js";
 
 describe("extension DOM helpers", () => {
   it("clicks X show-more controls before extracting post text", async () => {
@@ -199,6 +199,17 @@ describe("extension DOM helpers", () => {
     insertTextIntoComposer(composer, "Draft text");
 
     expect(composer.textContent).toBe("Draft text");
+  });
+
+  it("recovers the visible composer after the extension popup blurs X", () => {
+    document.body.innerHTML = `
+      <div aria-hidden="true"><div id="stale" role="textbox" contenteditable="true"></div></div>
+      <div id="reply" role="textbox" contenteditable="true"></div>
+    `;
+    const reply = document.getElementById("reply")!;
+    vi.spyOn(reply, "getBoundingClientRect").mockReturnValue(createRect({ top: 20, bottom: 70, width: 280 }));
+
+    expect(getFocusedComposer(document)).toBe(reply);
   });
 
   it("places the helper action beside the native inline submit button", () => {

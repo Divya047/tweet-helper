@@ -77,7 +77,10 @@ describe("backend routes", () => {
 
   it("scores visible posts with safe recommendations", async () => {
     const db = openDatabase(":memory:");
-    const mockCodex = createMockCodexClient(() => ({
+    let calls = 0;
+    const mockCodex = createMockCodexClient(() => {
+      calls += 1;
+      return ({
       rankedPosts: [
         {
           id: "123",
@@ -89,7 +92,8 @@ describe("backend routes", () => {
           risks: []
         }
       ]
-    }));
+      });
+    });
     const { app } = await buildServer({
       db,
       config: { dbPath: ":memory:", dailyBudgetUsd: 10, monthlyBudgetUsd: 10 },
@@ -109,6 +113,43 @@ describe("backend routes", () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.json().data.rankedPosts[0].recommendation).toBe("reply");
+    const cached = await app.inject({
+      method: "POST",
+      url: "/api/score/visible-posts",
+      payload: {
+        posts: [{ id: "123", text: "Local software should make privacy the default.", author: "dev" }],
+        audience: "Tech founders, indie hackers, and builders shipping products",
+        contentPillar: "building",
+        desiredOutcome: "earn relevant follows"
+      }
+    });
+    expect(cached.json().meta.cached).toBe(true);
+    expect(calls).toBe(1);
+    await app.close();
+  });
+
+  it("does not learn style from accepted generated feedback", async () => {
+    const db = openDatabase(":memory:");
+    const { app } = await buildServer({
+      db,
+      config: { dbPath: ":memory:", dailyBudgetUsd: 10, monthlyBudgetUsd: 10 },
+      codexClient: createMockCodexClient(() => ({}))
+    });
+
+    const accepted = await app.inject({
+      method: "POST",
+      url: "/api/feedback",
+      payload: { suggestionId: "generated", kind: "comment", decision: "accepted", finalText: "Generated wording." }
+    });
+    const edited = await app.inject({
+      method: "POST",
+      url: "/api/feedback",
+      payload: { suggestionId: "edited", kind: "comment", decision: "edited", originalText: "Generated wording.", finalText: "My wording." }
+    });
+
+    expect(accepted.json().data.learned).toBe(false);
+    expect(edited.json().data.learned).toBe(true);
+    expect(db.prepare("SELECT text FROM writing_examples ORDER BY text").all()).toEqual([{ text: "My wording." }]);
     await app.close();
   });
 

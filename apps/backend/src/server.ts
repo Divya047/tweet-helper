@@ -353,7 +353,9 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Bui
     const id = saveFeedback(db, feedbackInput);
 
     let learned = false;
-    if ((body.decision === "accepted" || body.decision === "edited") && body.finalText?.trim()) {
+    // Only a manual edit is evidence of the user's own wording. An accepted
+    // generated draft still informs taste, but must not become style training.
+    if (body.decision === "edited" && body.finalText?.trim()) {
       const example: WritingExampleInput = {
         id: `feedback:${id}`,
         kind: body.kind,
@@ -863,7 +865,11 @@ async function runCachedJsonGeneration<T>(options: {
   const cacheKey = cacheKeyFor({
     model: options.codexClient.defaultModel,
     endpoint: options.endpoint,
-    input: options.cacheInput
+    input: options.cacheInput,
+    // Prompt/schema changes must never reuse a response produced by old rules.
+    messages: options.request.messages,
+    schemaName: options.request.schemaName,
+    schema: options.request.schema
   });
 
   const cached = options.cacheable === false ? undefined : getCachedGeneration(options.db, cacheKey);
