@@ -17,6 +17,8 @@ export interface JsonCompletionRequest {
   schemaName: string;
   schema: Record<string, unknown>;
   maxTokens: number;
+  /** Trusted remote X media URLs to attach to the Codex request. */
+  imageUrls?: string[];
   temperature?: number;
   /** Per-request Codex CLI timeout. Defaults to 60s. */
   timeoutMs?: number;
@@ -40,6 +42,7 @@ export interface CodexInvocation {
   prompt: string;
   schema: Record<string, unknown>;
   timeoutMs: number;
+  imageUrls?: string[];
 }
 
 export type CodexRunner = (invocation: CodexInvocation) => Promise<string>;
@@ -84,7 +87,12 @@ async function requestJsonCompletion(
 ): Promise<Omit<JsonCompletionResult, "value">> {
   const timeoutMs = request.timeoutMs ?? 60_000;
   const prompt = messagesToPrompt(request.messages, request.schemaName);
-  const rawText = await run({ prompt, schema: request.schema, timeoutMs });
+  const rawText = await run({
+    prompt,
+    schema: request.schema,
+    timeoutMs,
+    ...(request.imageUrls?.length ? { imageUrls: request.imageUrls } : {})
+  });
   if (!rawText.trim()) {
     throw new Error("Codex CLI did not return a final response.");
   }
@@ -99,7 +107,7 @@ async function requestJsonCompletion(
 
 function createCodexCliRunner(command: string): CodexRunner {
   let authenticationCheck: Promise<void> | undefined;
-  return async ({ prompt, schema, timeoutMs }) => {
+  return async ({ prompt, schema, timeoutMs, imageUrls }) => {
     authenticationCheck ??= assertChatGPTLogin(command);
     await authenticationCheck;
     const tempDir = await mkdtemp(join(tmpdir(), "tweet-helper-codex-"));
@@ -107,6 +115,7 @@ function createCodexCliRunner(command: string): CodexRunner {
     const outputPath = join(tempDir, "response.json");
     try {
       await writeFile(schemaPath, JSON.stringify(toStrictOutputSchema(schema)), "utf8");
+      const imagePaths = await downloadXImages(imageUrls ?? [], tempDir);
       await runProcess(
         command,
         [
@@ -126,6 +135,7 @@ function createCodexCliRunner(command: string): CodexRunner {
           "never",
           "--cd",
           tempDir,
+          ...imagePaths.flatMap((path) => ["--image", path]),
           "-"
         ],
         prompt,
@@ -136,6 +146,64 @@ function createCodexCliRunner(command: string): CodexRunner {
       await rm(tempDir, { recursive: true, force: true });
     }
   };
+}
+
+async function downloadXImages(imageUrls: string[], tempDir: string): Promise<string[]> {
+  const unique = [...new Set(imageUrls)].slice(0, 24);
+  const downloaded = new Array<{ bytes: Uint8Array; extension: string } | undefined>(unique.length);
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    while (next < unique.length) {
+      const index = next++;
+      const value = unique[index]!;
+      try {
+        const url = trustedXMediaUrl(value);
+        if (!url) continue;
+        const response = await fetch(url, { redirect: "error", signal: AbortSignal.timeout(10_000) });
+        if (!response.ok) continue;
+        const declaredBytes = Number(response.headers.get("content-length") ?? 0);
+        if (Number.isFinite(declaredBytes) && declaredBytes > 8_000_000) continue;
+        const contentType = response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
+        const extension = contentType === "image/png"
+          ? "png"
+          : contentType === "image/webp"
+            ? "webp"
+            : contentType === "image/gif"
+              ? "gif"
+              : contentType === "image/jpeg"
+                ? "jpg"
+                : undefined;
+        if (!extension) continue;
+        const bytes = new Uint8Array(await response.arrayBuffer());
+        if (!bytes.length || bytes.length > 8_000_000) continue;
+        downloaded[index] = { bytes, extension };
+      } catch {
+        // Media is supplementary; retain the text-only path if X blocks a download.
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(4, unique.length) }, () => worker()));
+
+  const paths: string[] = [];
+  let totalBytes = 0;
+  for (const [index, image] of downloaded.entries()) {
+    if (!image || totalBytes + image.bytes.length > 32_000_000) continue;
+    totalBytes += image.bytes.length;
+    const path = join(tempDir, `source-image-${index}.${image.extension}`);
+    await writeFile(path, image.bytes);
+    paths.push(path);
+  }
+  return paths;
+}
+
+function trustedXMediaUrl(value: string): string | undefined {
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "https:" || url.hostname !== "pbs.twimg.com" || !url.pathname.startsWith("/media/")) return undefined;
+    return url.toString();
+  } catch {
+    return undefined;
+  }
 }
 
 async function assertChatGPTLogin(command: string): Promise<void> {
@@ -391,7 +459,7 @@ export const scoreResponseSchema = {
             items: { type: "string", maxLength: 40 }
           }
         },
-        required: ["id", "score", "recommendation", "reason", "suggestedAngle", "topicSummary", "risks"]
+        required: ["id", "score", "recommendation", "reason", "suggestedAngle", "topicSummary", "contributionPotential", "audienceFit", "novelty", "risk", "confidence", "risks"]
       }
     }
   },

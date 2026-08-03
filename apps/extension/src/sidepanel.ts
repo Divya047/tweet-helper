@@ -17,6 +17,7 @@ import {
   emptyOpportunityLaneStats,
   FIND_HIGH_INTENT,
   mapNativeExplore,
+  nextOpportunityWave,
   samplePostsForScoring,
   selectOpportunityMix,
   sourcePostUrl,
@@ -332,7 +333,7 @@ async function findHighIntentReplies(): Promise<void> {
       desiredOutcome: growth.outcome
     }, { timeoutMs: LONG_REQUEST_TIMEOUT_MS });
     const postsById = new Map(posts.map((post) => [post.id, post]));
-    const opportunities = selectOpportunityMix(scored.data.rankedPosts, posts, opportunityStats, targetCount)
+    const opportunities = selectOpportunityMix(scored.data.rankedPosts, posts, opportunityStats, scored.data.rankedPosts.length)
       .flatMap(({ score, lane }) => {
         const post = postsById.get(score.id);
         return post ? [{ score, post, lane }] : [];
@@ -342,54 +343,60 @@ async function findHighIntentReplies(): Promise<void> {
       return setStatus(`Scanned ${posts.length} posts — none passed the safe exploration floor. Try another feed.`);
     }
 
-    setStatus(`Drafting top ${opportunities.length} high-intent ${opportunities.length === 1 ? "reply" : "replies"}…`);
+    setStatus(`Drafting up to ${targetCount} high-intent replies…`);
     let drafted = 0;
-    const results = await mapPool(opportunities, 3, async ({ post, score }, index) => {
-      const result = await postJson<ApiEnvelope<DraftResponse>>("/api/generate/comment", {
-        sourcePost: post,
-        angle: score.suggestedAngle,
-        audience: growth.audience,
-        contentPillar: growth.pillar,
-        desiredOutcome: growth.outcome,
-        mode: "cheap",
-        instructions: buildTasteAwareReplyInstructions(growth.outcome),
-        regenerationSeed: `${state.sessionId}:reply:taste:${post.id ?? index}`
-      }, { timeoutMs: LONG_REQUEST_TIMEOUT_MS });
-      drafted += 1;
-      setStatus(`Drafting replies… ${drafted}/${opportunities.length}`);
-      return result;
-    });
-
     let added = 0;
-    results.forEach((result, index) => {
-      const suggestion = result.data.suggestions[0];
-      const opportunity = opportunities[index];
-      if (!suggestion || !opportunity || result.data.abstained) return;
-      const sourceSummary =
-        opportunity.score.topicSummary?.trim()
-        || truncateText(opportunity.post.text, 80);
-      state.queue.push({
-        id: stableId("queue"),
-        draft: {
-          id: suggestion.id,
-          text: suggestion.text,
-          strategy: `${laneLabel(opportunity.lane)} · ${opportunity.score.score}/100 · ${suggestion.strategy ?? result.data.tasteDecision?.stance ?? "Taste pick"} · ${opportunity.score.suggestedAngle}`,
-          recommended: true
-        },
-        opportunityLane: opportunity.lane,
-        context: { kind: "reply", currentText: "", target: opportunity.post },
-        ...(sourceSummary ? { sourceSummary } : {}),
-        createdAt: Date.now()
+    let cursor = 0;
+    while (added < targetCount && cursor < opportunities.length) {
+      const nextWave = nextOpportunityWave(opportunities, cursor, added, targetCount);
+      const wave = nextWave.items;
+      cursor = nextWave.nextCursor;
+      const results = await mapPool(wave, 3, async ({ post, score }, index) => {
+        const result = await postJson<ApiEnvelope<DraftResponse>>("/api/generate/comment", {
+          sourcePost: post,
+          angle: score.suggestedAngle,
+          audience: growth.audience,
+          contentPillar: growth.pillar,
+          desiredOutcome: growth.outcome,
+          mode: "cheap",
+          instructions: buildTasteAwareReplyInstructions(growth.outcome),
+          regenerationSeed: `${state.sessionId}:reply:taste:${post.id ?? cursor + index}`
+        }, { timeoutMs: LONG_REQUEST_TIMEOUT_MS });
+        drafted += 1;
+        setStatus(`Drafting replies… ${drafted} tried · ${added}/${targetCount} ready`);
+        return result;
       });
-      opportunityStats = recordOpportunityOutcome(opportunityStats, opportunity.lane, "shown");
-      added += 1;
-    });
+
+      results.forEach((result, index) => {
+        const suggestion = result.data.suggestions[0];
+        const opportunity = wave[index];
+        if (!suggestion || !opportunity || result.data.abstained || added >= targetCount) return;
+        const sourceSummary =
+          opportunity.score.topicSummary?.trim()
+          || truncateText(opportunity.post.text, 80);
+        state.queue.push({
+          id: stableId("queue"),
+          draft: {
+            id: suggestion.id,
+            text: suggestion.text,
+            strategy: `${laneLabel(opportunity.lane)} · ${opportunity.score.score}/100 · ${suggestion.strategy ?? result.data.tasteDecision?.stance ?? "Taste pick"} · ${opportunity.score.suggestedAngle}`,
+            recommended: true
+          },
+          opportunityLane: opportunity.lane,
+          context: { kind: "reply", currentText: "", target: opportunity.post },
+          ...(sourceSummary ? { sourceSummary } : {}),
+          createdAt: Date.now()
+        });
+        opportunityStats = recordOpportunityOutcome(opportunityStats, opportunity.lane, "shown");
+        added += 1;
+      });
+    }
 
     if (!state.activeQueueItemId && state.queue[0]) state.activeQueueItemId = state.queue[0].id;
     await persist();
     await persistOpportunityStats();
     const shortfall = targetCount > added ? ` Wanted ${targetCount}; only ${added} cleared the bar.` : "";
-    const laneCounts = countOpportunityLanes(state.queue.slice(-added));
+    const laneCounts = countOpportunityLanes(added ? state.queue.slice(-added) : []);
     setStatus(`${added} replies queued: ${laneCounts.proven} proven, ${laneCounts.adjacent} adjacent, ${laneCounts.wildcard} wildcard.${shortfall} Open each post, then Insert.`);
     renderQueue();
   } catch (error) {

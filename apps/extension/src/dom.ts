@@ -2,6 +2,7 @@ import type { VisiblePost } from "@tweet-helper/shared";
 import type { ComposerContext, ComposerKind, PostContext } from "./contracts.js";
 
 const TWEET_TEXT_SELECTOR = '[data-testid="tweetText"]';
+const TWEET_MEDIA_IMAGE_SELECTOR = '[data-testid="tweetPhoto"] img[src], img[src*="pbs.twimg.com/media/"]';
 const TWEET_ARTICLE_SELECTOR = 'article[data-testid="tweet"], article';
 const COMPOSER_SELECTOR = '[data-testid="tweetTextarea_0"][contenteditable="true"], [role="textbox"][contenteditable="true"]';
 const DIALOG_SELECTOR = '[role="dialog"]';
@@ -169,8 +170,13 @@ export function extractVisiblePosts(root: ParentNode = document): VisiblePost[] 
 
   for (const article of articles) {
     const textNode = getTweetTextNodes(article)[0];
-    const text = textNode ? normalizeElementText(textNode) : extractPostText(article);
-    if (!text || text.length < 20) {
+    const media = extractPostMedia(article, textNode);
+    const text = textNode
+      ? normalizeElementText(textNode)
+      : media.length
+        ? imageOnlyPostText(media)
+        : extractPostText(article);
+    if ((!text || text.length < 20) && !media.length) {
       continue;
     }
     const url = extractStatusUrl(article, textNode);
@@ -185,7 +191,8 @@ export function extractVisiblePosts(root: ParentNode = document): VisiblePost[] 
       text,
       viewportIndex: posts.length,
       ...(author ? { author } : {}),
-      ...(url ? { url } : {})
+      ...(url ? { url } : {}),
+      ...(media.length ? { media } : {})
     });
   }
 
@@ -305,14 +312,19 @@ export function getNearestSourcePost(composer: HTMLElement): PostContext | undef
 
   const sourceTextNode = findSourceTweetText(dialog, composer);
   if (!sourceTextNode) {
-    return undefined;
+    return sourcePostFromContainer(dialog);
   }
 
   return sourcePostFromContainer(dialog, sourceTextNode);
 }
 
 function sourcePostFromContainer(container: HTMLElement, textNode?: HTMLElement): PostContext | undefined {
-  const text = textNode ? normalizeElementText(textNode) : extractPostText(container);
+  const media = extractPostMedia(container, textNode);
+  const text = textNode
+    ? normalizeElementText(textNode)
+    : media.length
+      ? imageOnlyPostText(media)
+      : extractPostText(container);
   if (!text) {
     return undefined;
   }
@@ -323,7 +335,8 @@ function sourcePostFromContainer(container: HTMLElement, textNode?: HTMLElement)
     text,
     ...(id ? { id } : {}),
     ...(author ? { author } : {}),
-    ...(url ? { url } : {})
+    ...(url ? { url } : {}),
+    ...(media.length ? { media } : {})
   };
 }
 
@@ -333,6 +346,10 @@ export function getComposerContext(composer: HTMLElement): ComposerContext {
   const container = dialog ?? article;
   const nodes = container ? getTweetTextNodes(container).filter((node) => !composer.contains(node)) : [];
   const posts = nodes.map((node) => sourcePostFromContainer(container!, node)).filter((post): post is PostContext => !!post);
+  if (container && posts.length === 0) {
+    const mediaOnlyPost = sourcePostFromContainer(container);
+    if (mediaOnlyPost) posts.push(mediaOnlyPost);
+  }
   const target = article ? posts[0] : posts.at(-1);
   const parent = !article && posts.length > 1 ? posts.at(-2) : undefined;
   const quoted = article && posts.length > 1 ? posts[1] : undefined;
@@ -411,6 +428,47 @@ export function extractPostText(article: HTMLElement): string {
 
 function getTweetTextNodes(container: HTMLElement): HTMLElement[] {
   return [...container.querySelectorAll<HTMLElement>(TWEET_TEXT_SELECTOR)].filter((node) => normalizeElementText(node));
+}
+
+function extractPostMedia(container: HTMLElement, textNode?: HTMLElement): Array<{ type: "image"; url: string; altText?: string }> {
+  const textNodes = getTweetTextNodes(container);
+  const images = [...container.querySelectorAll<HTMLImageElement>(TWEET_MEDIA_IMAGE_SELECTOR)];
+  const assigned = textNode
+    ? images.filter((candidate) => nearestPrecedingTextNode(candidate, textNodes) === textNode)
+    : images;
+  const seen = new Set<string>();
+  return assigned.flatMap((candidate) => {
+    const url = normalizeXMediaUrl(candidate.currentSrc || candidate.src);
+    if (!url || seen.has(url)) return [];
+    seen.add(url);
+    const altText = candidate.alt?.trim();
+    return [{ type: "image" as const, url, ...(altText ? { altText } : {}) }];
+  });
+}
+
+function nearestPrecedingTextNode(image: HTMLImageElement, textNodes: HTMLElement[]): HTMLElement | undefined {
+  let nearest: HTMLElement | undefined;
+  for (const node of textNodes) {
+    if (node === image || !(node.compareDocumentPosition(image) & Node.DOCUMENT_POSITION_FOLLOWING)) continue;
+    nearest = node;
+  }
+  return nearest;
+}
+
+function normalizeXMediaUrl(value: string): string | undefined {
+  try {
+    const url = new URL(value, window.location.href);
+    if (url.protocol !== "https:" || url.hostname !== "pbs.twimg.com" || !url.pathname.startsWith("/media/")) return undefined;
+    if (url.searchParams.has("name")) url.searchParams.set("name", "large");
+    return url.toString();
+  } catch {
+    return undefined;
+  }
+}
+
+function imageOnlyPostText(media: Array<{ altText?: string }>): string {
+  const usefulAlt = media.map((item) => item.altText?.trim()).find((alt) => alt && !/^image$/i.test(alt));
+  return usefulAlt ? `Image post: ${usefulAlt}` : "Image post with no written caption.";
 }
 
 function normalizeElementText(element: HTMLElement): string {

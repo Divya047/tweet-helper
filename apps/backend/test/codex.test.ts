@@ -36,6 +36,17 @@ describe("Codex CLI client", () => {
 
     expect(run).toHaveBeenCalledTimes(1);
   });
+
+  it("forwards image attachments to the Codex invocation", async () => {
+    const run = vi.fn<(invocation: CodexInvocation) => Promise<string>>().mockResolvedValueOnce(
+      JSON.stringify({ suggestions: [{ text: "Visual reply.", rationale: "Uses the chart.", confidence: 0.9 }] })
+    );
+    const imageUrls = ["https://pbs.twimg.com/media/chart.jpg"];
+
+    await createCodexClient({ run }).completeJson({ ...request(), imageUrls });
+
+    expect(run.mock.calls[0]?.[0].imageUrls).toEqual(imageUrls);
+  });
 });
 
 function request(): JsonCompletionRequest {

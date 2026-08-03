@@ -62,6 +62,28 @@ describe("extension DOM helpers", () => {
     expect(posts[0]?.url).toContain("/mainauthor/status/111111111");
   });
 
+  it("collects X post images and keeps image-only posts eligible", () => {
+    document.body.innerHTML = `
+      <article data-testid="tweet">
+        <a href="/visualauthor">Visual Author</a>
+        <a href="/visualauthor/status/777777777">1h</a>
+        <div data-testid="tweetPhoto"><img src="https://pbs.twimg.com/media/chart.jpg?name=small" alt="Chart showing activation doubled after onboarding changed"></div>
+      </article>
+    `;
+    const article = document.querySelector("article")!;
+    vi.spyOn(article, "getBoundingClientRect").mockReturnValue(createRect({ top: 10, bottom: 190 }));
+
+    const posts = extractVisiblePosts(document);
+
+    expect(posts).toHaveLength(1);
+    expect(posts[0]?.text).toContain("activation doubled");
+    expect(posts[0]?.media).toEqual([{
+      type: "image",
+      url: "https://pbs.twimg.com/media/chart.jpg?name=large",
+      altText: "Chart showing activation doubled after onboarding changed"
+    }]);
+  });
+
   it("finds a tweet article by status id for open-post navigation", () => {
     document.body.innerHTML = `
       <article data-testid="tweet" id="a">
@@ -316,6 +338,21 @@ describe("extension DOM helpers", () => {
     expect(context.kind).toBe("reply");
     expect(context.target?.text).toBe("Main source post");
     expect(context.quoted?.text).toBe("Quoted post details");
+  });
+
+  it("keeps main and quoted post images attached to their respective text", () => {
+    document.body.innerHTML = `<article data-testid="tweet"><a href="/main/status/1">t</a><div data-testid="tweetText">Main source post with a visual</div><div data-testid="tweetPhoto"><img src="https://pbs.twimg.com/media/main.jpg" alt="Main diagram"></div><a href="/quote/status/2">t</a><div data-testid="tweetText">Quoted post details with a screenshot</div><div data-testid="tweetPhoto"><img src="https://pbs.twimg.com/media/quote.jpg" alt="Quoted screenshot"></div><div role="textbox" contenteditable="true"></div><button data-testid="tweetButtonInline">Reply</button></article>`;
+    const context = getComposerContext(document.querySelector<HTMLElement>('[role="textbox"]')!);
+    expect(context.target?.media?.map((media) => media.altText)).toEqual(["Main diagram"]);
+    expect(context.quoted?.media?.map((media) => media.altText)).toEqual(["Quoted screenshot"]);
+  });
+
+  it("provides image-only reply context to direct composer drafting", () => {
+    document.body.innerHTML = `<article data-testid="tweet"><a href="/visual/status/8">t</a><div data-testid="tweetPhoto"><img src="https://pbs.twimg.com/media/visual.jpg" alt="Dashboard showing week-over-week retention"></div><div role="textbox" contenteditable="true"></div><button data-testid="tweetButtonInline">Reply</button></article>`;
+    const context = getComposerContext(document.querySelector<HTMLElement>('[role="textbox"]')!);
+    expect(context.kind).toBe("reply");
+    expect(context.target?.text).toContain("week-over-week retention");
+    expect(context.target?.media).toHaveLength(1);
   });
 
   it("counts quote composers as posts even when a source tweet is visible", () => {

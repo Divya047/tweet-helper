@@ -106,6 +106,7 @@ export function buildCommentMessages(
         "Avoid stock AI patterns: 'It's not X, it's Y', 'The real unlock is…', 'Here's the thing…', 'At the end of the day…', stacked em dashes, and neat three-part lists.",
         "Vary reply structure across options when no tone is specified: caveat, tradeoff, implementation detail, pattern, constructive pushback, reasoned question, or concise add-on — not minor paraphrases of the same tone.",
         "Write a complete thought that is useful even when read on its own, while still responding directly to the source post.",
+        "When sourcePost, parentPost, or quotedPost includes media, inspect the attached images and use their actual content as context. Do not guess when an image is unavailable.",
         "When possible, contribute an implementation detail, implication, constraint, or well-reasoned question that the source author did not already state.",
         "Do not ask a question merely to get a response; earn the question with a useful premise first.",
         "Avoid generic agreement, applause, reply-guy energy, and comments that merely restate the source post.",
@@ -162,6 +163,7 @@ export function buildTasteJudgeMessages(
         "Do not reward disagreement, questions, technicality, or cleverness for their own sake.",
         "Treat the user's skipped/rejected examples as negative preference evidence, never as text to imitate.",
         "Treat edited examples and editSignals as stronger evidence than generic style advice.",
+        "Inspect attached source images when present; judge whether each reply fits both the written and visual context.",
         "Set shouldReply=false when no candidate clears 72/100, the source offers no honest opening, the reply merely restates the post, or silence better matches the user's taste.",
         "When shouldReply=true, recommendedId must identify the highest-scoring candidate.",
         "Score sourceFit, novelty, voiceFit, and restraint from 0-100. Overall score is not a simple average; a fatal flaw may dominate.",
@@ -258,6 +260,7 @@ export function buildScoreMessages(
         "Never recommend reply for comment-bait posts. Recommend skip instead and keep the score at or below 25.",
         "Treat as comment bait: like/comment/RT-if prompts, tag-someone asks, follow-for-follow or comment-to-get-DM hooks, fill-in-the-blank engagement farms, prove-me-wrong dunks with no substance, rate-this/1-10 asks, and posts whose main purpose is harvesting replies rather than sharing a useful idea.",
         "A thoughtful post that ends with one genuine question is not comment bait. Naked engagement questions and reply-harvesting posts are.",
+        "Inspect attached images referenced by each post's media field. Score the meaning of charts, screenshots, memes, and image-only posts rather than treating them as missing context.",
         "Penalize ragebait, low-context posts, repetitive trends, and obvious promotional traps.",
         "For each post, also write topicSummary: an ultra-short plain-language summary of what the post is about (max 12 words).",
         "topicSummary must describe the subject matter only — not why to reply, not the score rationale, and not the author handle.",
@@ -273,10 +276,12 @@ export function buildScoreMessages(
       content: JSON.stringify(
         {
           task: "score_visible_posts",
-          visiblePosts: request.posts.slice(0, 16).map((post) => ({
+          visiblePosts: request.posts.slice(0, 24).map((post) => ({
             id: post.id,
             ...(post.author ? { author: post.author } : {}),
-            text: truncateForScore(post.text)
+            text: truncateForScore(post.text),
+            ...(post.media?.length ? { media: post.media } : {}),
+            ...(post.quotedPost ? { quotedPost: post.quotedPost } : {})
           })),
           targetAudience: request.audience ?? "the user's intended professional audience",
           contentPillar: request.contentPillar ?? "choose the strongest fit",

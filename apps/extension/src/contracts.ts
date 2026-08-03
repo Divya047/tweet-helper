@@ -1,9 +1,9 @@
-import type { FeedbackRequest, OutcomeRequest, ScoredPost } from "@tweet-helper/shared";
+import type { FeedbackRequest, OutcomeRequest, ScoredPost, SourceMedia } from "@tweet-helper/shared";
 
 export type ComposerKind = "post" | "reply";
 export type EventKind = "insert" | "edit" | "skip" | "published";
 
-export interface PostContext { id?: string; author?: string; text: string; url?: string }
+export interface PostContext { id?: string; author?: string; text: string; url?: string; media?: SourceMedia[] }
 export interface ComposerContext {
   kind: ComposerKind;
   currentText: string;
@@ -29,6 +29,12 @@ export type OpportunityOutcome = "shown" | "used" | "edited" | "skipped";
 export type OpportunityLaneStats = Record<OpportunityLane, Record<OpportunityOutcome, number>>;
 export interface OpportunityMix { proven: number; adjacent: number; wildcard: number }
 export interface OpportunitySelection { score: ScoredPost; lane: OpportunityLane }
+
+export function nextOpportunityWave<T>(pool: T[], cursor: number, accepted: number, target: number): { items: T[]; nextCursor: number } {
+  const size = Math.max(0, target - accepted);
+  const items = pool.slice(cursor, cursor + size);
+  return { items, nextCursor: cursor + items.length };
+}
 
 export const DEFAULT_OPPORTUNITY_MIX: OpportunityMix = { proven: 5, adjacent: 2, wildcard: 1 };
 
@@ -65,7 +71,7 @@ export function selectOpportunityMix(
   rankedPosts: ScoredPost[],
   posts: PostContext[],
   stats: OpportunityLaneStats,
-  target = FIND_HIGH_INTENT.targetReplies
+  target: number = FIND_HIGH_INTENT.targetReplies
 ): OpportunitySelection[] {
   const postById = new Map(posts.map((post) => [post.id, post]));
   const safe = rankedPosts.filter((post) =>

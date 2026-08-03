@@ -89,6 +89,11 @@ describe("backend routes", () => {
           reason: "Strong topic fit.",
           suggestedAngle: "Add a practical caveat.",
           topicSummary: "Privacy should be the default in local software",
+          contributionPotential: 90,
+          audienceFit: 84,
+          novelty: 72,
+          risk: 8,
+          confidence: 88,
           risks: []
         }
       ]
@@ -128,6 +133,87 @@ describe("backend routes", () => {
     await app.close();
   });
 
+  it("scores all 24 submitted posts and attaches trusted X media", async () => {
+    const db = openDatabase(":memory:");
+    let scoringRequest: JsonCompletionRequest | undefined;
+    const mockCodex = createMockCodexClient((request) => {
+      scoringRequest = request;
+      const userPayload = JSON.parse(request.messages[1]!.content) as { visiblePosts: Array<{ id: string }> };
+      return {
+        rankedPosts: userPayload.visiblePosts.map((post, index) => ({
+          id: post.id,
+          score: 90 - index,
+          recommendation: "reply",
+          reason: "Useful peer discussion.",
+          suggestedAngle: "Add a concrete implementation detail.",
+          topicSummary: `Topic ${index}`,
+          contributionPotential: 85,
+          audienceFit: 80,
+          novelty: 70,
+          risk: 5,
+          confidence: 90,
+          risks: []
+        }))
+      };
+    });
+    const { app } = await buildServer({
+      db,
+      config: { dbPath: ":memory:", dailyBudgetUsd: 10, monthlyBudgetUsd: 10 },
+      codexClient: mockCodex
+    });
+    const imageUrl = "https://pbs.twimg.com/media/example.jpg?name=large";
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/score/visible-posts",
+      payload: {
+        posts: Array.from({ length: 24 }, (_, index) => ({
+          id: `post-${index}`,
+          text: `Candidate post number ${index} has enough context to score.`,
+          ...(index === 23 ? { media: [{ type: "image", url: imageUrl, altText: "A product chart" }] } : {})
+        }))
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().data.rankedPosts).toHaveLength(24);
+    expect(JSON.parse(scoringRequest!.messages[1]!.content).visiblePosts).toHaveLength(24);
+    expect(scoringRequest!.imageUrls).toEqual([imageUrl]);
+    await app.close();
+  });
+
+  it("rejects incomplete score results instead of silently dropping candidates", async () => {
+    const db = openDatabase(":memory:");
+    const mockCodex = createMockCodexClient(() => ({
+      rankedPosts: [{
+        id: "first",
+        score: 80,
+        recommendation: "reply",
+        reason: "Useful discussion.",
+        suggestedAngle: "Add detail.",
+        topicSummary: "First topic",
+        contributionPotential: 80,
+        audienceFit: 80,
+        novelty: 70,
+        risk: 5,
+        confidence: 90,
+        risks: []
+      }]
+    }));
+    const { app } = await buildServer({
+      db,
+      config: { dbPath: ":memory:", dailyBudgetUsd: 10, monthlyBudgetUsd: 10 },
+      codexClient: mockCodex
+    });
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/score/visible-posts",
+      payload: { posts: [{ id: "first", text: "First complete post for scoring." }, { id: "second", text: "Second complete post for scoring." }] }
+    });
+
+    expect(response.statusCode).toBe(500);
+    await app.close();
+  });
+
   it("does not learn style from accepted generated feedback", async () => {
     const db = openDatabase(":memory:");
     const { app } = await buildServer({
@@ -164,6 +250,11 @@ describe("backend routes", () => {
           reason: "High engagement potential.",
           suggestedAngle: "Agree and ask a follow-up.",
           topicSummary: "Ask for likes and tags",
+          contributionPotential: 20,
+          audienceFit: 40,
+          novelty: 10,
+          risk: 90,
+          confidence: 85,
           risks: []
         }
       ]
@@ -311,7 +402,9 @@ describe("backend routes", () => {
 
   it("selects one source-aware reply through the taste judge", async () => {
     const db = openDatabase(":memory:");
+    const requests: JsonCompletionRequest[] = [];
     const mockCodex = createMockCodexClient((request) => {
+      requests.push(request);
       if (request.schemaName === "IntentAnalysis") {
         return {
           intent: "Author asks when to talk to customers",
@@ -356,7 +449,13 @@ describe("backend routes", () => {
     const response = await app.inject({
       method: "POST",
       url: "/api/generate/comment",
-      payload: { sourcePost: { id: "1", text: "When should founders start talking to customers?" } }
+      payload: {
+        sourcePost: {
+          id: "1",
+          text: "When should founders start talking to customers?",
+          media: [{ type: "image", url: "https://pbs.twimg.com/media/customer-chart.jpg", altText: "Interview response chart" }]
+        }
+      }
     });
 
     expect(response.statusCode).toBe(200);
@@ -366,6 +465,8 @@ describe("backend routes", () => {
       text: "Before the roadmap hardens into assumptions.",
       strategy: "answer"
     });
+    expect(requests).toHaveLength(3);
+    expect(requests.every((request) => request.imageUrls?.[0] === "https://pbs.twimg.com/media/customer-chart.jpg")).toBe(true);
     expect(response.json().data.tasteDecision.recommendedId).toBe("sharp");
     await app.close();
   });

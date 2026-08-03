@@ -13,6 +13,7 @@ import {
   deriveFeedTrends,
   emptyOpportunityLaneStats,
   mapNativeExplore,
+  nextOpportunityWave,
   outcomePayloadForEvent,
   feedbackPayloadForEvent,
   REPLY_TONES,
@@ -187,6 +188,13 @@ describe("MV3 side-panel and accessibility contracts", () => {
     stats.wildcard.used = 3;
     stats.wildcard.skipped = 5;
     expect(adaptiveOpportunityMix(stats)).toEqual({ proven: 4, adjacent: 2, wildcard: 2 });
+  });
+  it("backfills from the remaining opportunity pool after draft abstentions", () => {
+    const pool = Array.from({ length: 12 }, (_, index) => index + 1);
+    const first = nextOpportunityWave(pool, 0, 0, 8);
+    expect(first.items).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+    const backfill = nextOpportunityWave(pool, first.nextCursor, 6, 8);
+    expect(backfill.items).toEqual([9, 10]);
   });
   it("defines a long trend scan budget and clusters scored topic summaries", () => {
     expect(TREND_SCAN.maxDurationMs).toBeGreaterThanOrEqual(120_000);

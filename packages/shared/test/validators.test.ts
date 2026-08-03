@@ -5,6 +5,7 @@ import {
   looksLikeCommentBait,
   suppressCommentBaitScores,
   validateDraftResponse,
+  validateCompleteScoreVisiblePostsResponse,
   validateGenerateRewriteRequest,
   validateScoreVisiblePostsResponse
 } from "../src/index.js";
@@ -150,6 +151,29 @@ describe("shared validators", () => {
         ]
       })
     ).toThrow(/invalid recommendation/i);
+  });
+
+  it("requires scoring dimensions and complete input IDs", () => {
+    const scored = {
+      rankedPosts: [{
+        id: "1",
+        score: 90,
+        recommendation: "reply",
+        reason: "Strong fit",
+        suggestedAngle: "Add detail",
+        topicSummary: "Local software privacy",
+        contributionPotential: 90,
+        audienceFit: 85,
+        novelty: 70,
+        risk: 5,
+        confidence: 92,
+        risks: []
+      }]
+    };
+    expect(validateCompleteScoreVisiblePostsResponse(scored, ["1"]).rankedPosts).toHaveLength(1);
+    expect(() => validateCompleteScoreVisiblePostsResponse(scored, ["1", "2"])).toThrow(/omitted post ids: 2/i);
+    const withoutRisk = { rankedPosts: [{ ...scored.rankedPosts[0], risk: undefined }] };
+    expect(() => validateScoreVisiblePostsResponse(withoutRisk)).toThrow(/risk/i);
   });
 
   it("validates rewrite requests", () => {

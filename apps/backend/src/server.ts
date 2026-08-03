@@ -9,7 +9,7 @@ import {
   suppressCommentBaitScores,
   parseIntentAnalysis,
   validateDraftResponse,
-  validateScoreVisiblePostsResponse,
+  validateCompleteScoreVisiblePostsResponse,
   type DraftResponse,
   type FeedbackRequest,
   type GenerateCommentRequest,
@@ -232,6 +232,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Bui
         schemaName: "DraftResponse",
         schema: draftResponseSchema,
         maxTokens: mode === "cheap" ? 620 : 760,
+        imageUrls: imageUrlsForSource(body.sourcePost),
         temperature: mode === "cheap" ? 0.6 : 0.75
       },
       validate: (value) =>
@@ -288,7 +289,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Bui
     }
     const sanitizedPosts = posts
       .filter((post) => typeof post.text === "string" && post.text.trim())
-      .slice(0, 16)
+      .slice(0, 24)
       .map((post, index) => ({
         ...post,
         id: post.id?.trim() || `visible-${index}`,
@@ -319,12 +320,16 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Bui
       request: {
         messages,
         schemaName: "ScoreVisiblePostsResponse",
-        schema: scoreResponseSchema,
-        maxTokens: 1000,
+        schema: scoreResponseSchemaForCount(sanitizedPosts.length),
+        maxTokens: Math.max(1200, sanitizedPosts.length * 140),
+        imageUrls: imageUrlsForPosts(sanitizedPosts),
         temperature: 0.2,
         timeoutMs: 90_000
       },
-      validate: validateScoreVisiblePostsResponse
+      validate: (value) => validateCompleteScoreVisiblePostsResponse(
+        value,
+        sanitizedPosts.map((post) => post.id!)
+      )
     });
     return {
       ...response,
@@ -587,6 +592,7 @@ async function judgeReplyTaste(
         schemaName: "TasteDecision",
         schema: tasteDecisionSchema,
         maxTokens: 700,
+        imageUrls: imageUrlsForSource(body.sourcePost),
         temperature: 0.1
       },
       validate: (value) => parseTasteDecision(value, response, analysis) ?? fallback()
@@ -781,6 +787,7 @@ async function analyzeIntent(
           required: ["intent", "confidence", "needsClarification", "constraints"]
         },
         maxTokens: 280,
+        ...(source ? { imageUrls: imageUrlsForSource(source) } : {}),
         temperature: 0.2
       },
       validate: (value) => {
@@ -844,6 +851,36 @@ function combineGenerationMeta(
   };
 }
 
+function scoreResponseSchemaForCount(count: number): Record<string, unknown> {
+  return {
+    ...scoreResponseSchema,
+    properties: {
+      ...scoreResponseSchema.properties,
+      rankedPosts: {
+        ...scoreResponseSchema.properties.rankedPosts,
+        minItems: count,
+        maxItems: count
+      }
+    }
+  };
+}
+
+function imageUrlsForPosts(posts: GenerateCommentRequest["sourcePost"][]): string[] {
+  return [...new Set(posts.flatMap((post) => imageUrlsForSource(post)))];
+}
+
+function imageUrlsForSource(source: GenerateCommentRequest["sourcePost"]): string[] {
+  const mediaItems = Array.isArray(source.media) ? source.media : [];
+  const own = mediaItems.flatMap((media) =>
+    media && media.type === "image" && typeof media.url === "string" && media.url.trim() ? [media.url.trim()] : []
+  );
+  return [...new Set([
+    ...own,
+    ...(source.parentPost ? imageUrlsForSource(source.parentPost) : []),
+    ...(source.quotedPost ? imageUrlsForSource(source.quotedPost) : [])
+  ])];
+}
+
 async function runCachedJsonGeneration<T>(options: {
   db: AppDatabase;
   codexClient: CodexClient;
@@ -886,8 +923,33 @@ async function runCachedJsonGeneration<T>(options: {
     };
   }
 
-  const completion = await options.codexClient.completeJson(options.request);
-  const data = options.validate(completion.value);
+  let completion = await options.codexClient.completeJson(options.request);
+  let data: T;
+  try {
+    data = options.validate(completion.value);
+  } catch (error) {
+    const validationMessage = error instanceof Error ? error.message : "The response was incomplete or inconsistent.";
+    const repaired = await options.codexClient.completeJson({
+      ...options.request,
+      messages: [
+        ...options.request.messages,
+        { role: "assistant", content: completion.rawText },
+        {
+          role: "user",
+          content: `The previous JSON failed semantic validation: ${validationMessage}. Return a complete corrected JSON result with exactly the requested input IDs and all required fields.`
+        }
+      ],
+      maxTokens: Math.min(10_000, Math.max(options.request.maxTokens * 2, options.request.maxTokens + 1000)),
+      temperature: 0
+    });
+    data = options.validate(repaired.value);
+    completion = {
+      ...repaired,
+      inputTokens: completion.inputTokens + repaired.inputTokens,
+      outputTokens: completion.outputTokens + repaired.outputTokens,
+      costUsd: completion.costUsd + repaired.costUsd
+    };
+  }
   if (options.cacheable !== false) {
     saveCachedGeneration(options.db,cacheKey,JSON.stringify(data),completion.inputTokens,completion.outputTokens,completion.costUsd);
   }

@@ -29,8 +29,15 @@ export interface SourcePost {
   text: string;
   url?: string;
   metrics?: Record<string, number | string | undefined>;
+  media?: SourceMedia[];
   parentPost?: SourcePost;
   quotedPost?: SourcePost;
+}
+
+export interface SourceMedia {
+  type: "image";
+  url: string;
+  altText?: string;
 }
 
 export type SpeechAct =
@@ -511,15 +518,15 @@ export function validateScoreVisiblePostsResponse(value: unknown): ScoreVisibleP
       recommendation,
       reason: stringField(item, "reason"),
       suggestedAngle: stringField(item, "suggestedAngle"),
+      contributionPotential: numberField(item, "contributionPotential", 0, 100),
+      audienceFit: numberField(item, "audienceFit", 0, 100),
+      novelty: numberField(item, "novelty", 0, 100),
+      risk: numberField(item, "risk", 0, 100),
+      confidence: numberField(item, "confidence", 0, 100),
       risks: Array.isArray(item.risks) ? item.risks.filter((risk): risk is string => typeof risk === "string") : []
     };
     if (typeof item.topicSummary === "string" && item.topicSummary.trim()) {
       result.topicSummary = item.topicSummary.trim().slice(0, 120);
-    }
-    for (const field of ["contributionPotential", "audienceFit", "novelty", "risk", "confidence"] as const) {
-      if (typeof item[field] === "number" && Number.isFinite(item[field])) {
-        result[field] = Math.min(100, Math.max(0, item[field]));
-      }
     }
     if (typeof item.draftSeed === "string") {
       result.draftSeed = item.draftSeed;
@@ -528,6 +535,24 @@ export function validateScoreVisiblePostsResponse(value: unknown): ScoreVisibleP
   });
 
   return { rankedPosts };
+}
+
+/** Validate that scoring returned exactly one result for every submitted post and no invented IDs. */
+export function validateCompleteScoreVisiblePostsResponse(
+  value: unknown,
+  expectedIds: string[]
+): ScoreVisiblePostsResponse {
+  const response = validateScoreVisiblePostsResponse(value);
+  const expected = new Set(expectedIds.map((id) => id.trim()).filter(Boolean));
+  const seen = new Set<string>();
+  for (const post of response.rankedPosts) {
+    if (!expected.has(post.id)) throw new Error(`Score response included unknown post id: ${post.id}`);
+    if (seen.has(post.id)) throw new Error(`Score response included duplicate post id: ${post.id}`);
+    seen.add(post.id);
+  }
+  const missing = [...expected].filter((id) => !seen.has(id));
+  if (missing.length) throw new Error(`Score response omitted post ids: ${missing.join(", ")}`);
+  return response;
 }
 
 export function validateGenerateRewriteRequest(value: unknown): GenerateRewriteRequest {
