@@ -6,7 +6,7 @@ The iOS workspace contains a full-screen SwiftUI composer, a compact Safari Web 
 
 - `TweetHelperMobile`: enter a brief or reply context with the normal iOS keyboard, generate a native 1+4 Explore set (recommended first, alternatives on demand), edit a working draft, see soft Today counts, review the saved queue, and configure backend + growth defaults in Settings.
 - `TweetHelperShare`: share text or a web URL from Chrome, X, or another app; review, edit, or skip drafts, then use `Save & Return to X` to save to the App Group and restore host-app focus. If an app shares no usable content, `Paste Context` reads the clipboard once after a tap. Uses the same growth prefs as the main app.
-- `TweetHelperSafari`: browse `x.com` in Safari and use a compact three-tab popup for Today, Queue, and Ideas. It reuses the Chrome feed collector for Find 8 high-intent replies and trend scans, inserts into the X web composer, and sends backend calls through a native App Group/Tailscale bridge.
+- `TweetHelperSafari`: browse `x.com` in Safari and use a compact four-tab popup for Today, Queue, Ideas, and Tools. It reuses the Chrome feed collector for configurable high-intent reply and trend scans, inserts into the X web composer, and sends backend calls through a native App Group/Tailscale bridge. Tools includes scan filters and funnel history, writing presets, local profiles, templates, and profile backup.
 - `TweetHelperKeyboard`: large `Insert saved draft`, `Rewrite current`, `Undo`, and `Globe` actions. Inserts bump soft goals and record both `used` outcomes and learned-taste feedback. It has no embedded editor and never submits.
 - `TweetHelperTests`: share parsing, App Group transfer, 1+4 envelope mapping, used-outcome payload, activity day reset, and rewrite/undo helper coverage.
 
@@ -20,7 +20,7 @@ Feed-native features (high-intent reply scoring and trend scans) work in the Chr
 4. Build the containing app on an iPhone. In its Settings sheet, paste the **same** backend URL that opens `/health` in Safari (your Mac’s Tailscale IP, not the placeholder `100.64.0.1`), plus the optional mobile auth token. Those values are shared through the App Group.
 5. On first launch, allow **Local Network** when iOS prompts. If Check connection fails with `[-1004]` while Safari works, open iOS Settings → Tweet Helper → Local Network and turn it on, then retry.
 6. In iOS Settings → General → Keyboard → Keyboards, add Tweet Helper and enable Full Access. iOS requires Full Access for a custom keyboard to call the local backend.
-7. In the system share sheet, choose Tweet Helper. Use “Edit Actions” if it is not initially visible.
+7. In the system share sheet, choose Tweet Helper. Use "Edit Actions" if it is not initially visible.
 8. In iOS Settings → Apps → Safari → Extensions, enable Tweet Helper and allow access to `x.com`. Sign into `x.com` in Safari, open the page menu, and choose Tweet Helper. Keep its compact sheet open during an automatic feed scroll.
 
 ## Backend and privacy

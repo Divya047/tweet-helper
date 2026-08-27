@@ -1,5 +1,5 @@
 declare const chrome: {
-  storage?: { local?: { get(keys?: string | string[] | Record<string, unknown> | null): Promise<Record<string, unknown>>; set(items: Record<string, unknown>): Promise<void> } };
+  storage?: { local?: { get(keys?: string | string[] | Record<string, unknown> | null): Promise<Record<string, unknown>>; set(items: Record<string, unknown>): Promise<void>; remove(keys: string | string[]): Promise<void> } };
   runtime?: {
     onInstalled?: { addListener(callback: () => void): void };
     onMessage?: { addListener(callback: (message: any, sender: any, sendResponse: (response?: any) => void) => boolean | void): void };

@@ -5,7 +5,7 @@ body{padding-bottom:env(safe-area-inset-bottom)}
 header{height:42px;padding:8px 12px;display:flex;align-items:center;justify-content:space-between;gap:8px;border-bottom:1px solid color-mix(in srgb,CanvasText 15%,transparent)}
 header strong{font-size:15px;white-space:nowrap}
 header span{font-size:10px;color:color-mix(in srgb,CanvasText 58%,transparent);text-align:right}
-nav{position:sticky;top:0;z-index:3;display:grid;grid-template-columns:repeat(3,1fr);gap:3px;padding:5px 8px;background:Canvas;border-bottom:1px solid color-mix(in srgb,CanvasText 12%,transparent)}
+nav{position:sticky;top:0;z-index:3;display:grid;grid-template-columns:repeat(4,1fr);gap:3px;padding:5px 8px;background:Canvas;border-bottom:1px solid color-mix(in srgb,CanvasText 12%,transparent)}
 button,textarea,input,select{font:inherit}
 button{min-height:40px;padding:6px 9px;border:1px solid color-mix(in srgb,CanvasText 24%,transparent);border-radius:9px;background:Canvas;color:CanvasText;font-weight:650}
 button:active{transform:scale(.985);background:color-mix(in srgb,CanvasText 9%,Canvas)}
@@ -30,6 +30,14 @@ main>h1{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0
 .source{padding:7px;border-radius:8px;background:color-mix(in srgb,CanvasText 6%,Canvas);display:grid;gap:2px}
 .source p{margin:0;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .actions{display:grid;grid-template-columns:1fr 1fr;gap:5px}
+.queue-tools,.settings{display:grid;gap:5px}.queue-tools{padding:8px;border-radius:9px;background:color-mix(in srgb,CanvasText 5%,Canvas)}
+.check{display:flex;align-items:center;gap:6px}.check input{width:auto}
+.card-heading{display:flex;align-items:center;justify-content:space-between;gap:5px}.icon-button{min-width:38px;font-size:17px;padding:2px}
+.warnings{display:grid;gap:3px}.warnings span{padding:5px;border-radius:6px;background:color-mix(in srgb,orange 18%,Canvas);font-size:10px}
+.tag-list{display:flex;flex-wrap:wrap;gap:4px}.tag{padding:2px 6px;border-radius:999px;background:color-mix(in srgb,Highlight 12%,Canvas);font-size:9px}
+.settings h2{margin:0;font-size:12px}.settings textarea{min-height:58px}
+.funnel{display:grid;grid-template-columns:repeat(5,1fr);gap:2px}.funnel span{display:grid;text-align:center;font-weight:750;padding:3px;border-radius:6px;background:color-mix(in srgb,CanvasText 6%,Canvas)}.funnel small{font-size:7px;font-weight:500}
+.card p{margin:0}
 .actions button{min-height:36px;padding:4px 6px;font-size:11px}
 .queue-edit-label{font-weight:700}
 .queue-edit{min-height:90px}

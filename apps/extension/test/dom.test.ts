@@ -135,6 +135,56 @@ describe("extension DOM helpers", () => {
     expect(result.stoppedReason).toBe("cap");
   });
 
+  it("keeps scrolling through delayed feed renders instead of stopping after two empty scans", async () => {
+    const pages = [
+      `<article data-testid="tweet"><a href="/a1">A</a><div data-testid="tweetText">First visible post that is long enough.</div><a href="/a1/status/1">t</a></article>`,
+      "",
+      "",
+      `<article data-testid="tweet"><a href="/a2">A</a><div data-testid="tweetText">Delayed post that should still be collected.</div><a href="/a2/status/2">t</a></article>`
+    ];
+    let page = 0;
+    const mount = (): void => {
+      document.body.innerHTML = pages[Math.min(page, pages.length - 1)]!;
+      for (const article of document.querySelectorAll("article")) {
+        vi.spyOn(article as HTMLElement, "getBoundingClientRect").mockReturnValue(createRect({ top: 20, bottom: 120 }));
+      }
+    };
+    mount();
+
+    const result = await collectFeedPosts({
+      maxCandidates: 2,
+      maxScrolls: 5,
+      pauseMs: 0,
+      wait: async () => undefined,
+      scroll: () => {
+        page += 1;
+        mount();
+      }
+    });
+
+    expect(result.posts.map((post) => post.id)).toEqual(["1", "2"]);
+    expect(result.stoppedReason).toBe("cap");
+  });
+
+  it("uses an overlapping feed scroll step so tall posts do not create blind spots", async () => {
+    document.body.innerHTML = `<article data-testid="tweet"><a href="/a">A</a><div data-testid="tweetText">Visible post that is long enough to collect.</div><a href="/a/status/9">t</a></article>`;
+    const article = document.querySelector("article")!;
+    vi.spyOn(article as HTMLElement, "getBoundingClientRect").mockReturnValue(createRect({ top: 20, bottom: 120 }));
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: 1_000 });
+    const scrollBy = vi.spyOn(window, "scrollBy").mockImplementation(() => undefined);
+
+    await collectFeedPosts({
+      maxCandidates: 2,
+      maxScrolls: 1,
+      pauseMs: 0,
+      stagnantLimit: 99,
+      scrollStepPercent: 65,
+      wait: async () => undefined
+    });
+
+    expect(scrollBy).toHaveBeenCalledWith(0, 650);
+  });
+
   it("stops a long feed scroll when duration elapses or abort fires", async () => {
     document.body.innerHTML = `<article data-testid="tweet"><a href="/a">A</a><div data-testid="tweetText">Visible post that is long enough to collect.</div><a href="/a/status/9">t</a></article>`;
     const article = document.querySelector("article")!;

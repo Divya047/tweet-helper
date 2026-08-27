@@ -22,6 +22,9 @@ export interface QueueItem {
   createdAt: number;
   /** Ultra-short summary of the source post topic for fast queue review. */
   sourceSummary?: string;
+  favorite?: boolean;
+  tags?: string[];
+  scheduledFor?: string;
 }
 
 export type OpportunityLane = "proven" | "adjacent" | "wildcard";
@@ -102,6 +105,12 @@ export function selectOpportunityMix(
       ? "proven"
       : score.score >= FIND_HIGH_INTENT.adjacentMinScore ? "adjacent" : "wildcard";
     add(score, lane);
+  }
+  const belowFloor = safe
+    .filter((post) => !ids.has(post.id))
+    .sort((left, right) => opportunityQuality(right) - opportunityQuality(left));
+  for (const score of belowFloor) {
+    add(score, "wildcard");
   }
   return chosen;
 }
@@ -253,6 +262,7 @@ export type ExtensionMessage =
       maxScrolls?: number;
       pauseMs?: number;
       stagnantLimit?: number;
+      scrollStepPercent?: number;
       maxDurationMs?: number;
       reportProgress?: boolean;
     }
@@ -264,9 +274,9 @@ export type ExtensionMessage =
 export const FIND_HIGH_INTENT = {
   targetReplies: 8,
   maxCandidates: 24,
-  maxScrolls: 16,
+  maxScrolls: 24,
   scrollPauseMs: 650,
-  stagnantLimit: 2,
+  stagnantLimit: 4,
   minScore: 60,
   adjacentMinScore: 55,
   wildcardMinScore: 50,

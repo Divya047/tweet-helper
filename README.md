@@ -95,6 +95,17 @@ npm run extension:build
 
 Then load `apps/extension/dist` as an unpacked extension in Chrome.
 
+The shared Chrome and Safari panel now includes:
+
+- Configurable reply scans with depth, overlap, render timing, author exclusions, blocked terms, and optional engagement-bait inclusion.
+- A saved scan funnel showing collected, filtered, scored, eligible, abstained, and queued counts.
+- Queue search, post/reply filters, favorites, tags, planned dates, duplicate warnings, sorting, copy, bulk removal, and local templates.
+- One-click reply adaptation for the currently open reply composer, plus concise, technical, pushback, question, warm, and learned-taste rewrite presets.
+- Local draft checks for length, generic praise, engagement-only questions, absolute or numeric claims, excess hashtags, and duplicate copy.
+- Numbered thread splitting for posts over 280 characters.
+- Up to twelve local profiles. Each profile keeps separate queues, activity, growth preferences, scan controls, templates, and scan history.
+- JSON backup and restore for the current profile. Tweet Helper still never submits to X.
+
 ## iPhone Safari Scanner and Keyboard
 
 The iOS project lives in `apps/ios/TweetHelperMobile`. It includes a setup app, compact Safari Web Extension, Share Extension, and custom keyboard.
@@ -107,7 +118,7 @@ HOST=0.0.0.0 PORT=4317 MOBILE_AUTH_TOKEN=<long-random-token> npm run backend:dev
 
 On the phone, use `http://<mac-tailscale-ip>:4317` as the backend URL and enter the same token. Run `npm run extension:safari-build`, open the Xcode project, confirm signing and the shared App Group on every target, and run the containing app on the phone. Enable Tweet Helper under iOS Settings → Apps → Safari → Extensions with access to `x.com`; enable the keyboard separately with Allow Full Access.
 
-In Safari on `x.com`, the compact popup exposes Today, Queue, Find 8 high-intent replies, and feed-trend ideas while the shared content script handles source matching and insertion. Backend requests travel through the native extension handler to the App Group’s Tailscale URL. The keyboard remains available for inserting or rewriting text in the native X app. Nothing submits automatically or calls the X API.
+In Safari on `x.com`, the compact popup exposes Today, Queue, Find 8 high-intent replies, and feed-trend ideas while the shared content script handles composer detection and insertion. A queued reply can be inserted into any open reply composer. Backend requests travel through the native extension handler to the App Group’s Tailscale URL. The keyboard remains available for inserting or rewriting text in the native X app. Nothing submits automatically or calls the X API.
 
 ## API
 

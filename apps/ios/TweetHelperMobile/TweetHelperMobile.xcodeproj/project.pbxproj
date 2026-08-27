@@ -29,7 +29,7 @@
 		300000000000000000000006 /* content.js in Resources */ = {isa = PBXBuildFile; fileRef = 300000000000000000000107 /* content.js */; };
 		300000000000000000000007 /* background.js in Resources */ = {isa = PBXBuildFile; fileRef = 300000000000000000000108 /* background.js */; };
 		300000000000000000000008 /* sidepanel.js in Resources */ = {isa = PBXBuildFile; fileRef = 300000000000000000000109 /* sidepanel.js */; };
-		300000000000000000000009 /* activity.js in Resources */ = {isa = PBXBuildFile; fileRef = 300000000000000000000110 /* activity.js */; };
+		300000000000000000000009 /* state.js in Resources */ = {isa = PBXBuildFile; fileRef = 300000000000000000000110 /* state.js */; };
 		300000000000000000000010 /* TweetHelperSafari.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = 300000000000000000000201 /* TweetHelperSafari.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
@@ -90,7 +90,7 @@
 		300000000000000000000107 /* content.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = content.js; sourceTree = "<group>"; };
 		300000000000000000000108 /* background.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = background.js; sourceTree = "<group>"; };
 		300000000000000000000109 /* sidepanel.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = sidepanel.js; sourceTree = "<group>"; };
-		300000000000000000000110 /* activity.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = activity.js; sourceTree = "<group>"; };
+		300000000000000000000110 /* state.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = state.js; sourceTree = "<group>"; };
 		300000000000000000000201 /* TweetHelperSafari.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = TweetHelperSafari.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -192,7 +192,7 @@
 				300000000000000000000107 /* content.js */,
 				300000000000000000000108 /* background.js */,
 				300000000000000000000109 /* sidepanel.js */,
-				300000000000000000000110 /* activity.js */,
+				300000000000000000000110 /* state.js */,
 			);
 			path = Resources;
 			sourceTree = "<group>";
@@ -309,7 +309,7 @@
 				300000000000000000000006 /* content.js in Resources */,
 				300000000000000000000007 /* background.js in Resources */,
 				300000000000000000000008 /* sidepanel.js in Resources */,
-				300000000000000000000009 /* activity.js in Resources */,
+				300000000000000000000009 /* state.js in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

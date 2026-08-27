@@ -226,20 +226,13 @@ export function publishContextForSubmit(
   return { ...last.context, currentText: finalText };
 }
 
-/**
- * Queue drafts carry publishing intent. Never put a reply into a new-post composer
- * (or a draft for one source into a different reply thread).
- */
+/** Queue drafts keep their post/reply intent, but replies can move between threads. */
 export function queueInsertionIssue(item: QueueItem, live: ComposerContext): string | undefined {
   if (item.context.kind === "reply" && live.kind !== "reply") {
-    return "This is a reply draft. Open its source post and click Reply before inserting.";
+    return "This is a reply draft. Open any reply composer before inserting.";
   }
   if (item.context.kind === "post" && live.kind !== "post") {
     return "This is a post draft. Open a new post composer before inserting.";
-  }
-  if (item.context.kind !== "reply" || !item.context.target || !live.target) return undefined;
-  if (!samePost(item.context.target, live.target)) {
-    return "This reply belongs to a different source post. Open the queued source and click Reply first.";
   }
   return undefined;
 }
@@ -255,15 +248,6 @@ export function compatibleQueueItem(
   return queue.find((item) => item.id !== activeQueueItemId && !queueInsertionIssue(item, live));
 }
 
-function samePost(expected: NonNullable<ComposerContext["target"]>, live: NonNullable<ComposerContext["target"]>): boolean {
-  if (expected.id && live.id) return expected.id === live.id;
-  const expectedStatusId = expected.url?.match(/\/status\/(\d+)/)?.[1];
-  const liveStatusId = live.url?.match(/\/status\/(\d+)/)?.[1];
-  if (expectedStatusId && liveStatusId) return expectedStatusId === liveStatusId;
-  const expectedText = expected.text.replace(/\s+/g, " ").trim();
-  const liveText = live.text.replace(/\s+/g, " ").trim();
-  return expectedText === liveText || expectedText.includes(liveText) || liveText.includes(expectedText);
-}
 function observeSuccess(): void {
   if (!tracker.pending || !hasPublishSuccessEvidence()) return;
   const event = tracker.confirm(statusIdFromUrl(location.href)); if (event) void sendRuntimeMessage({ type: "RECORD_EVENT", event });
@@ -334,6 +318,7 @@ async function handleMessage(message: ExtensionMessage): Promise<unknown> {
         ...(message.maxScrolls !== undefined ? { maxScrolls: message.maxScrolls } : {}),
         ...(message.pauseMs !== undefined ? { pauseMs: message.pauseMs } : {}),
         ...(message.stagnantLimit !== undefined ? { stagnantLimit: message.stagnantLimit } : {}),
+        ...(message.scrollStepPercent !== undefined ? { scrollStepPercent: message.scrollStepPercent } : {}),
         ...(message.maxDurationMs !== undefined ? { maxDurationMs: message.maxDurationMs } : {}),
         signal: abort.signal,
         ...(message.reportProgress

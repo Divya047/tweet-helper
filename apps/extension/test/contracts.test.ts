@@ -161,7 +161,8 @@ describe("MV3 side-panel and accessibility contracts", () => {
   it("targets eight high-intent replies from a capped feed collect", () => {
     expect(FIND_HIGH_INTENT.targetReplies).toBe(8);
     expect(FIND_HIGH_INTENT.maxCandidates).toBe(24);
-    expect(FIND_HIGH_INTENT.maxScrolls).toBe(16);
+    expect(FIND_HIGH_INTENT.maxScrolls).toBe(24);
+    expect(FIND_HIGH_INTENT.stagnantLimit).toBe(4);
     expect(FIND_HIGH_INTENT.minScore).toBe(60);
     expect(FIND_HIGH_INTENT.adjacentMinScore).toBe(55);
     expect(FIND_HIGH_INTENT.wildcardMinScore).toBe(50);
@@ -179,6 +180,29 @@ describe("MV3 side-panel and accessibility contracts", () => {
     expect(selected.filter((item) => item.lane === "proven")).toHaveLength(5);
     expect(selected.filter((item) => item.lane === "adjacent")).toHaveLength(2);
     expect(selected.filter((item) => item.lane === "wildcard")).toHaveLength(1);
+  });
+  it("backfills from safe reply recommendations when an ordinary feed scores just below the exploration floor", () => {
+    const ranked = Array.from({ length: 23 }, (_, index) => ({
+      id: `safe-${index}`,
+      score: 49 - index / 10,
+      recommendation: "reply" as const,
+      reason: "A useful founder conversation",
+      suggestedAngle: "Add one concrete lesson",
+      topicSummary: `safe topic ${index}`,
+      contributionPotential: 55,
+      audienceFit: 48,
+      novelty: 60,
+      risk: 10,
+      confidence: 70,
+      risks: []
+    }));
+    const posts = ranked.map((post) => ({ id: post.id, text: post.topicSummary, author: post.id }));
+
+    const selected = selectOpportunityMix(ranked, posts, emptyOpportunityLaneStats());
+
+    expect(selected).toHaveLength(FIND_HIGH_INTENT.targetReplies);
+    expect(selected.every((item) => item.lane === "wildcard")).toBe(true);
+    expect(selected[0]?.score.id).toBe("safe-0");
   });
   it("adapts exploration only after enough insert-or-skip decisions", () => {
     const stats = emptyOpportunityLaneStats();

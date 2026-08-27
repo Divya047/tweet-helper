@@ -3,6 +3,12 @@ import type { ClientEvent, ComposerContext, ExtensionState, QueueItem } from "./
 import { stableId } from "./contracts.js";
 
 export const STATE_KEY = "tweet-helper-state-v2";
+export const ACTIVE_PROFILE_KEY = "tweet-helper-active-profile";
+export const DEFAULT_PROFILE_ID = "default";
+
+export function stateKeyForProfile(profileId: string): string {
+  return `${STATE_KEY}:${normalizeProfileId(profileId)}`;
+}
 export const initialState = (): ExtensionState => ({
   sessionId: stableId("session"),
   queue: [],
@@ -29,11 +35,23 @@ export function normalizeExtensionState(value: Partial<ExtensionState> | undefin
 }
 
 export async function loadState(): Promise<ExtensionState> {
-  const stored = await chrome.storage!.local!.get(STATE_KEY);
-  return normalizeExtensionState(stored[STATE_KEY] as Partial<ExtensionState> | undefined);
+  const profileMeta = await chrome.storage!.local!.get(ACTIVE_PROFILE_KEY);
+  const profileId = normalizeProfileId(profileMeta[ACTIVE_PROFILE_KEY]);
+  const profileKey = stateKeyForProfile(profileId);
+  const profileStored = await chrome.storage!.local!.get(profileKey);
+  const legacyStored = profileId === DEFAULT_PROFILE_ID ? await chrome.storage!.local!.get(STATE_KEY) : {};
+  const value = profileStored[profileKey]
+    ?? legacyStored[STATE_KEY];
+  return normalizeExtensionState(value as Partial<ExtensionState> | undefined);
 }
 export async function saveState(state: ExtensionState): Promise<void> {
-  await chrome.storage!.local!.set({ [STATE_KEY]: normalizeExtensionState(state) });
+  const stored = await chrome.storage!.local!.get(ACTIVE_PROFILE_KEY);
+  const profileId = normalizeProfileId(stored[ACTIVE_PROFILE_KEY]);
+  const normalized = normalizeExtensionState(state);
+  await chrome.storage!.local!.set({
+    [stateKeyForProfile(profileId)]: normalized,
+    ...(profileId === DEFAULT_PROFILE_ID ? { [STATE_KEY]: normalized } : {})
+  });
 }
 export async function appendEvent(event: ClientEvent): Promise<ExtensionState> {
   const state = await loadState();
@@ -71,4 +89,8 @@ function validQueueItem(value: unknown): value is QueueItem {
 }
 function validEvent(value: unknown): value is ClientEvent {
   return !!value && typeof value === "object" && typeof (value as ClientEvent).clientEventId === "string";
+}
+
+function normalizeProfileId(value: unknown): string {
+  return typeof value === "string" && /^[a-z0-9_-]{1,64}$/i.test(value) ? value : DEFAULT_PROFILE_ID;
 }

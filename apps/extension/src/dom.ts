@@ -51,6 +51,7 @@ export type CollectFeedPostsOptions = {
   maxScrolls?: number;
   pauseMs?: number;
   stagnantLimit?: number;
+  scrollStepPercent?: number;
   /** Soft time budget for long trend scans. Checked between scrolls. */
   maxDurationMs?: number;
   signal?: AbortSignal;
@@ -73,11 +74,12 @@ export async function collectFeedPosts(options: CollectFeedPostsOptions = {}): P
   const maxCandidates = options.maxCandidates ?? 24;
   const maxScrolls = options.maxScrolls ?? 10;
   const pauseMs = options.pauseMs ?? 750;
-  const stagnantLimit = options.stagnantLimit ?? 2;
+  const stagnantLimit = options.stagnantLimit ?? 4;
   const maxDurationMs = options.maxDurationMs;
   const signal = options.signal;
   const onProgress = options.onProgress;
-  const scroll = options.scroll ?? defaultScrollFeed;
+  const scrollStepPercent = Math.min(90, Math.max(40, options.scrollStepPercent ?? 65));
+  const scroll = options.scroll ?? (() => defaultScrollFeed(scrollStepPercent));
   const wait = options.wait ?? ((ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms)));
   const now = options.now ?? (() => Date.now());
   const startedAt = now();
@@ -151,8 +153,8 @@ export async function collectFeedPosts(options: CollectFeedPostsOptions = {}): P
   return { posts: [...collected.values()], scrolls, elapsedMs: elapsed(), stoppedReason };
 }
 
-function defaultScrollFeed(): void {
-  const amount = Math.round(Math.max(window.innerHeight * 0.9, 500));
+function defaultScrollFeed(scrollStepPercent: number): void {
+  const amount = Math.round(Math.max(window.innerHeight * (scrollStepPercent / 100), 300));
   const column = document.querySelector<HTMLElement>('[data-testid="primaryColumn"]');
   if (column && column.scrollHeight > column.clientHeight + 40) {
     column.scrollBy(0, amount);

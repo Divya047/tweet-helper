@@ -4,6 +4,7 @@ import { compatibleQueueItem, contextualAction, publishContextForSubmit, queueIn
 import { getComposerContext } from "../src/dom.js";
 import { PublishTracker } from "../src/publish.js";
 import { activityFromEvents, appendEvent, loadState, saveState } from "../src/state.js";
+import { ACTIVE_PROFILE_KEY } from "../src/state.js";
 
 beforeEach(() => {
   const data: Record<string, unknown> = {};
@@ -18,7 +19,7 @@ describe("contextual composer action", () => {
     expect(contextualAction({ kind: "post", currentText: "" }, false)).toBe("Open brief");
     expect(contextualAction({ kind: "reply", currentText: "" }, true)).toBe("Insert next");
   });
-  it("only offers queued insertion when the draft is compatible with the live composer", () => {
+  it("allows a queued reply in any live reply composer", () => {
     const queuedReply = {
       id: "q1",
       draft: { id: "d1", text: "reply" },
@@ -30,7 +31,7 @@ describe("contextual composer action", () => {
       kind: "reply",
       currentText: "",
       target: { id: "2", text: "another source" }
-    })).toContain("different source post");
+    })).toBeUndefined();
     expect(queueInsertionIssue(queuedReply, {
       kind: "reply",
       currentText: "",
@@ -89,6 +90,20 @@ describe("publish evidence and persistence", () => {
     const state = await loadState(); state.queue.push({ id: "q1", draft: { id: "d1", text: "draft" }, context: { kind: "post", currentText: "" }, createdAt: 1 }); await saveState(state);
     const event = { clientEventId: "stable-1", kind: "insert" as const, occurredAt: new Date().toISOString(), finalText: "draft", context: { kind: "post" as const, currentText: "draft" } };
     await appendEvent(event); await appendEvent(event); const restored = await loadState(); expect(restored.sessionId).toBe(state.sessionId); expect(restored.queue).toHaveLength(1); expect(restored.events).toHaveLength(1); expect(restored.activity.posts).toBe(1);
+  });
+  it("keeps queues and activity separate between local profiles", async () => {
+    const defaultState = await loadState();
+    defaultState.queue.push({ id: "default", draft: { id: "d1", text: "default draft" }, context: { kind: "post", currentText: "" }, createdAt: 1 });
+    await saveState(defaultState);
+    await chrome.storage!.local!.set({ [ACTIVE_PROFILE_KEY]: "work" });
+    const workState = await loadState();
+    expect(workState.queue).toEqual([]);
+    workState.queue.push({ id: "work", draft: { id: "d2", text: "work draft" }, context: { kind: "post", currentText: "" }, createdAt: 2 });
+    await saveState(workState);
+    await chrome.storage!.local!.set({ [ACTIVE_PROFILE_KEY]: "default" });
+    expect((await loadState()).queue.map((entry) => entry.id)).toEqual(["default"]);
+    await chrome.storage!.local!.set({ [ACTIVE_PROFILE_KEY]: "work" });
+    expect((await loadState()).queue.map((entry) => entry.id)).toEqual(["work"]);
   });
   it("counts helper insertions by stored kind and ignores native publish events", () => {
     const today = new Date().toISOString();
